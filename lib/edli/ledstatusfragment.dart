@@ -35,12 +35,6 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     widget.bleManager.addListener(_onBLEUpdate);
     _lastLogCount = widget.bleManager.logs.length;
     _startBlinkTimers();
-    
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && widget.bleManager.isConnected) {
-        _sendCommand();
-      }
-    });
   }
 
   @override
@@ -200,7 +194,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
       await widget.bleManager.sendString('?0003!');
       
       _parseTimeoutTimer?.cancel();
-      _parseTimeoutTimer = Timer(const Duration(seconds: 5), () {
+      _parseTimeoutTimer = Timer(const Duration(seconds: 15), () {
         if (_isLoading && mounted) {
           setState(() {
             _isLoading = false;
@@ -320,7 +314,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                         
                         return Container(
                           width: displayWidth,
-                          height: constraints.maxHeight * 0.9,
+                          height: constraints.maxHeight * 0.98,
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: const Color(0xFFD4C5A0),
@@ -364,48 +358,73 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                                 Expanded(
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 20),
-                                    child: Column(
-                                      children: [
-                                        // SF and PF row at the top
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.center,
+                                    child: LayoutBuilder(
+                                      builder: (context, constraints) {
+                                        // Calculate LED size based on number of channels and available space
+                                        double ledHeight = 40.0;
+                                        double ledWidth = 50.0;
+                                        
+                                        if (_numChannels > 0) {
+                                          // Calculate available height: total height - SF/PF section
+                                          // SF/PF section = text (12) + spacing (4) + LED (ledHeight) + gap (4)
+                                          final sfpfSectionHeight = 12 + 4 + ledHeight + 4;
+                                          final availableForChannels = constraints.maxHeight - sfpfSectionHeight;
+                                          
+                                          // Each channel row needs: LED height + vertical padding (2)
+                                          final requiredHeightPerChannel = ledHeight + 2;
+                                          final totalRequired = requiredHeightPerChannel * _numChannels;
+                                          
+                                          // If it doesn't fit, reduce LED size
+                                          if (totalRequired > availableForChannels) {
+                                            ledHeight = ((availableForChannels / _numChannels) - 2).clamp(15.0, 40.0);
+                                            ledWidth = (ledHeight * 1.25).clamp(25.0, 50.0);
+                                          }
+                                        }
+                                        
+                                        return Column(
                                           children: [
-                                            _buildTopLED('SF', _sfStatus),
-                                            const SizedBox(width: 12),
-                                            _buildTopLED('PF', _pfStatus),
-                                          ],
-                                        ),
-                                        
-                                        const SizedBox(height: 8),
-                                        
-                                        // Channel LEDs Grid
-                                        if (_numChannels > 0)
-                                          Expanded(
-                                            child: Column(
-                                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                              children: List.generate(_numChannels, (index) {
-                                                final channelNum = _numChannels - index;
-                                                final channelStatus = (channelNum - 1) < _channelStatuses.length 
-                                                    ? _channelStatuses[channelNum - 1] 
-                                                    : 0;
-                                                
-                                                return _buildChannelRow(channelNum, channelStatus);
-                                              }),
+                                            // SF and PF row at the top
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                _buildTopLED('SF', _sfStatus, ledWidth, ledHeight),
+                                                const SizedBox(width: 12),
+                                                _buildTopLED('PF', _pfStatus, ledWidth, ledHeight),
+                                              ],
                                             ),
-                                          )
-                                        else
-                                          const Expanded(
-                                            child: Center(
-                                              child: Text(
-                                                'No Data',
-                                                style: TextStyle(
-                                                  color: Colors.white38,
-                                                  fontSize: 14,
+                                            
+                                            const SizedBox(height: 4),
+                                            
+                                            // Channel LEDs Grid
+                                            if (_numChannels > 0)
+                                              Expanded(
+                                                child: Column(
+                                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                                  children: List.generate(_numChannels, (index) {
+                                                    final channelNum = _numChannels - index;
+                                                    final channelStatus = (channelNum - 1) < _channelStatuses.length 
+                                                        ? _channelStatuses[channelNum - 1] 
+                                                        : 0;
+                                                    
+                                                    return _buildChannelRow(channelNum, channelStatus, ledWidth, ledHeight);
+                                                  }),
+                                                ),
+                                              )
+                                            else
+                                              const Expanded(
+                                                child: Center(
+                                                  child: Text(
+                                                    'No Data',
+                                                    style: TextStyle(
+                                                      color: Colors.white38,
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
                                                 ),
                                               ),
-                                            ),
-                                          ),
-                                      ],
+                                          ],
+                                        );
+                                      },
                                     ),
                                   ),
                                 ),
@@ -443,7 +462,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     );
   }
   
-  Widget _buildTopLED(String label, int status) {
+  Widget _buildTopLED(String label, int status, double width, double height) {
     bool isOn = false;
     const Color ledColor = Colors.yellow; // Always yellow for SF and PF
     
@@ -469,11 +488,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
         ),
         const SizedBox(height: 4),
         Container(
-          width: 50,
-          height: 40,
+          width: width,
+          height: height,
           decoration: BoxDecoration(
             color: isOn ? ledColor : Colors.grey[850],
-            borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: Colors.grey[700]!,
               width: 2,
@@ -491,7 +509,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     );
   }
   
-  Widget _buildChannelRow(int channelNum, int channelStatus) {
+  Widget _buildChannelRow(int channelNum, int channelStatus, double ledWidth, double ledHeight) {
     final lsb = channelStatus & 0xF;
     
     bool leftOn = false;
@@ -534,7 +552,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     }
     
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
+      padding: const EdgeInsets.symmetric(vertical: 1),
       child: Row(
         children: [
           // Left spacer for centering
@@ -545,11 +563,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
           
           // Left LED (Green)
           Container(
-            width: 50,
-            height: 40,
+            width: ledWidth,
+            height: ledHeight,
             decoration: BoxDecoration(
               color: leftOn ? Colors.green : Colors.grey[850],
-              borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: Colors.grey[700]!,
                 width: 2,
@@ -568,11 +585,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
           
           // Right LED (Red)
           Container(
-            width: 50,
-            height: 40,
+            width: ledWidth,
+            height: ledHeight,
             decoration: BoxDecoration(
               color: rightOn ? Colors.red : Colors.grey[850],
-              borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: Colors.grey[700]!,
                 width: 2,

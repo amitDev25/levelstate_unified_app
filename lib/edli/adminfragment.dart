@@ -203,7 +203,7 @@ class _AdminFragmentState extends State<AdminFragment> {
 
     await widget.bleManager.sendString('?0001!');
     
-    Future.delayed(const Duration(seconds: 5), () {
+    Future.delayed(const Duration(seconds: 15), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
@@ -353,8 +353,8 @@ class _AdminFragmentState extends State<AdminFragment> {
         dialogShown = true;
       }
 
-      // Safety timeout: close dialog after 5 seconds
-      final timeoutTimer = Timer(const Duration(seconds: 5), () {
+      // Safety timeout: close dialog after 30 seconds
+      final timeoutTimer = Timer(const Duration(seconds: 30), () {
         if (mounted) {
           try {
             if (dialogShown) {

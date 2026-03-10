@@ -11,7 +11,15 @@ import 'main.dart' show BLEManager, BLEHeader;
 
 class ConfigScreen extends StatefulWidget {
   final BLEManager ble;
-  const ConfigScreen({super.key, required this.ble});
+  final bool? isSaved;
+  final VoidCallback? onToggleSave;
+  
+  const ConfigScreen({
+    super.key, 
+    required this.ble,
+    this.isSaved,
+    this.onToggleSave,
+  });
 
   @override
   State<ConfigScreen> createState() => _ConfigScreenState();
@@ -227,7 +235,12 @@ class _ConfigScreenState extends State<ConfigScreen> {
   @override
   Widget build(BuildContext context) {
     return Column(children: [
-      BLEHeader(ble: widget.ble, title: 'CONFIGURATION'),
+      BLEHeader(
+        ble: widget.ble, 
+        title: 'CONFIGURATION',
+        isSaved: widget.isSaved,
+        onToggleSave: widget.onToggleSave,
+      ),
 
       // Busy banner
       if (_isReading || _saving || _writing)

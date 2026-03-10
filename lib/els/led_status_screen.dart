@@ -14,7 +14,15 @@ import 'main.dart' show BLEManager, BLEHeader;
 // ─────────────────────────────────────────────────────────────
 class LEDStatusScreen extends StatefulWidget {
   final BLEManager ble;
-  const LEDStatusScreen({super.key, required this.ble});
+  final bool? isSaved;
+  final VoidCallback? onToggleSave;
+  
+  const LEDStatusScreen({
+    super.key, 
+    required this.ble,
+    this.isSaved,
+    this.onToggleSave,
+  });
 
   @override
   State<LEDStatusScreen> createState() => _LEDStatusScreenState();
@@ -54,7 +62,12 @@ class _LEDStatusScreenState extends State<LEDStatusScreen> {
   Widget build(BuildContext context) {
     final ble = widget.ble;
     return Column(children: [
-      BLEHeader(ble: ble, title: 'LED STATUS'),
+      BLEHeader(
+        ble: ble, 
+        title: 'LED STATUS',
+        isSaved: widget.isSaved,
+        onToggleSave: widget.onToggleSave,
+      ),
 
       // Poll status bar
       if (ble.isConnected)

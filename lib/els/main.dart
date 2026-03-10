@@ -6,6 +6,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../device_preferences.dart';
 import 'led_status_screen.dart';
 import 'config_screen.dart';
 import 'settings_screen.dart';
@@ -16,7 +17,10 @@ import 'settings_screen.dart';
 void main() => runApp(const HMSoftApp());
 
 class HMSoftApp extends StatelessWidget {
-  const HMSoftApp({super.key});
+  final BluetoothDevice? autoConnectDevice;
+  
+  const HMSoftApp({super.key, this.autoConnectDevice});
+  
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -34,7 +38,7 @@ class HMSoftApp extends StatelessWidget {
         useMaterial3: true,
         fontFamily: 'monospace',
       ),
-      home: const MainScreen(),
+      home: MainScreen(autoConnectDevice: autoConnectDevice),
     );
   }
 }
@@ -410,7 +414,7 @@ class BLEManager extends ChangeNotifier {
           'hex': swapped,
           'location': "https://www.google.com/maps/search/?api=1&query="+location,
         }),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 20));
 
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
@@ -763,7 +767,10 @@ class BLEManager extends ChangeNotifier {
 // MAIN SCREEN
 // ─────────────────────────────────────────────────────────────
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final BluetoothDevice? autoConnectDevice;
+  
+  const MainScreen({super.key, this.autoConnectDevice});
+  
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
@@ -771,11 +778,27 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   final BLEManager _ble = BLEManager();
   int _selectedTab = 0;
+  bool _isSaved = false;
 
   @override
   void initState() {
     super.initState();
     _ble.addListener(_onBLEUpdate);
+    _checkSavedStatus();
+    
+    // Auto-connect if device is provided
+    if (widget.autoConnectDevice != null) {
+      Future.delayed(Duration.zero, () {
+        _ble.connectToDevice(widget.autoConnectDevice!);
+      });
+    }
+  }
+
+  Future<void> _checkSavedStatus() async {
+    final saved = await DevicePreferences.hasSavedDevice();
+    setState(() {
+      _isSaved = saved;
+    });
   }
 
   @override
@@ -788,6 +811,46 @@ class _MainScreenState extends State<MainScreen> {
   void _onBLEUpdate() {
     _syncPolling();
     setState(() {});
+  }
+
+  Future<void> _toggleSaveDevice() async {
+    if (_isSaved) {
+      // Unsave the device
+      await DevicePreferences.clearDevice();
+      setState(() {
+        _isSaved = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Device connection cleared'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } else {
+      // Save the device
+      if (_ble._device != null) {
+        await DevicePreferences.saveDevice(
+          deviceType: 'ELS',
+          deviceId: _ble._device!.remoteId.toString(),
+          deviceName: _ble._device!.platformName.isNotEmpty 
+              ? _ble._device!.platformName 
+              : 'ELS Device',
+        );
+        setState(() {
+          _isSaved = true;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Device connection saved! App will auto-connect on next launch.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    }
   }
 
   // Start LED poll only when connected + activated + on LED tab
@@ -828,11 +891,31 @@ class _MainScreenState extends State<MainScreen> {
 
   Widget _buildBody() {
     switch (_selectedTab) {
-      case 0:  return LEDStatusScreen(ble: _ble);
-      case 1:  return CustomCommandScreen(ble: _ble);
-      case 2:  return ConfigScreen(ble: _ble);
-      case 3:  return SettingsScreen(ble: _ble);
-      default: return LEDStatusScreen(ble: _ble);
+      case 0:  return LEDStatusScreen(
+          ble: _ble, 
+          isSaved: _isSaved, 
+          onToggleSave: _toggleSaveDevice,
+        );
+      case 1:  return CustomCommandScreen(
+          ble: _ble,
+          isSaved: _isSaved,
+          onToggleSave: _toggleSaveDevice,
+        );
+      case 2:  return ConfigScreen(
+          ble: _ble,
+          isSaved: _isSaved,
+          onToggleSave: _toggleSaveDevice,
+        );
+      case 3:  return SettingsScreen(
+          ble: _ble,
+          isSaved: _isSaved,
+          onToggleSave: _toggleSaveDevice,
+        );
+      default: return LEDStatusScreen(
+          ble: _ble,
+          isSaved: _isSaved,
+          onToggleSave: _toggleSaveDevice,
+        );
     }
   }
 
@@ -990,7 +1073,16 @@ class _ActivationGate extends StatelessWidget {
 class BLEHeader extends StatefulWidget {
   final BLEManager ble;
   final String     title;
-  const BLEHeader({super.key, required this.ble, required this.title});
+  final bool? isSaved;
+  final VoidCallback? onToggleSave;
+  
+  const BLEHeader({
+    super.key, 
+    required this.ble, 
+    required this.title,
+    this.isSaved,
+    this.onToggleSave,
+  });
 
   @override
   State<BLEHeader> createState() => _BLEHeaderState();
@@ -1118,6 +1210,48 @@ class _BLEHeaderState extends State<BLEHeader> {
                 ),
               ),
             ),
+            // Save/Unsave button (only show when connected and activated)
+            if (widget.ble.isConnected && 
+                widget.ble.activationStatus == ActivationStatus.activated &&
+                widget.onToggleSave != null &&
+                widget.isSaved != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: GestureDetector(
+                  onTap: widget.onToggleSave,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: widget.isSaved! 
+                          ? Colors.orange.withOpacity(0.2)
+                          : Colors.green.withOpacity(0.2),
+                      border: Border.all(
+                        color: widget.isSaved! ? Colors.orange : Colors.green,
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          widget.isSaved! ? Icons.bookmark : Icons.bookmark_border,
+                          size: 16,
+                          color: widget.isSaved! ? Colors.orange : Colors.green,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          widget.isSaved! ? 'Unsave' : 'Save',
+                          style: TextStyle(
+                            color: widget.isSaved! ? Colors.orange : Colors.green,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
           ]),
         ],
       ),
@@ -1348,7 +1482,16 @@ class _DeviceSelectorSheetState extends State<DeviceSelectorSheet> {
 // ─────────────────────────────────────────────────────────────
 class CustomCommandScreen extends StatefulWidget {
   final BLEManager ble;
-  const CustomCommandScreen({super.key, required this.ble});
+  final bool? isSaved;
+  final VoidCallback? onToggleSave;
+  
+  const CustomCommandScreen({
+    super.key, 
+    required this.ble,
+    this.isSaved,
+    this.onToggleSave,
+  });
+  
   @override
   State<CustomCommandScreen> createState() => _CustomCommandScreenState();
 }
@@ -1401,7 +1544,12 @@ class _CustomCommandScreenState extends State<CustomCommandScreen> {
     final isWrite = widget.ble.functionCode == '16';
 
     return Column(children: [
-      BLEHeader(ble: widget.ble, title: 'CUSTOM COMMAND'),
+      BLEHeader(
+        ble: widget.ble, 
+        title: 'CUSTOM COMMAND',
+        isSaved: widget.isSaved,
+        onToggleSave: widget.onToggleSave,
+      ),
 
       Padding(
         padding: const EdgeInsets.all(16),

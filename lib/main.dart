@@ -1,14 +1,13 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'edli/main.dart' as edli;
 import 'els/main.dart' as els;
+import 'device_preferences.dart';
 
 // ─────────────────────────────────────────────────────────────
 // ENTRY POINT
 // ─────────────────────────────────────────────────────────────
 void main() {
-  // Set up HTTP overrides for EDLI app
-  HttpOverrides.global = edli.MyHttpOverrides();
   runApp(const UnifiedApp());
 }
 
@@ -46,6 +45,137 @@ class DeviceSelectionScreen extends StatefulWidget {
 
 class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
   String? selectedDevice;
+  bool _isCheckingPreferences = true;
+  bool _hasSavedDevice = false;
+  Map<String, String?> _savedDeviceInfo = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSavedDevice();
+  }
+
+  Future<void> _checkSavedDevice() async {
+    final hasSaved = await DevicePreferences.hasSavedDevice();
+    
+    if (hasSaved && mounted) {
+      final deviceInfo = await DevicePreferences.getSavedDevice();
+      final deviceType = deviceInfo['type'];
+      final deviceId = deviceInfo['id'];
+      
+      if (deviceType != null && deviceId != null) {
+        // Show saved device page instead of auto-connecting
+        setState(() {
+          _hasSavedDevice = true;
+          _savedDeviceInfo = deviceInfo;
+          _isCheckingPreferences = false;
+        });
+        return;
+      }
+    }
+    
+    setState(() {
+      _isCheckingPreferences = false;
+    });
+  }
+
+  Future<void> _autoConnectAndNavigate(String deviceType, String deviceId) async {
+    try {
+      // Show loading dialog
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => Center(
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(
+                  color: Color(0xFF00E5FF),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Connecting to $deviceType...',
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Start scanning for the saved device
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+      
+      BluetoothDevice? targetDevice;
+      
+      // Listen for scan results
+      final subscription = FlutterBluePlus.scanResults.listen((results) {
+        for (var result in results) {
+          if (result.device.remoteId.toString() == deviceId) {
+            targetDevice = result.device;
+            break;
+          }
+        }
+      });
+      
+      // Wait for scan to complete
+      await Future.delayed(const Duration(seconds: 10));
+      await FlutterBluePlus.stopScan();
+      await subscription.cancel();
+      
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop(); // Close loading dialog
+      
+      if (targetDevice != null) {
+        // Navigate to the appropriate app with the device
+        Widget targetScreen;
+        if (deviceType == 'EDLI') {
+          targetScreen = edli.BLEAsciiApp(autoConnectDevice: targetDevice);
+        } else {
+          targetScreen = els.HMSoftApp(autoConnectDevice: targetDevice);
+        }
+        
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => targetScreen),
+          );
+        }
+      } else {
+        // Device not found, show error and stay on selection screen
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Saved device not found. Please select manually.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          setState(() {
+            _isCheckingPreferences = false;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // Close loading dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Auto-connect failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() {
+          _isCheckingPreferences = false;
+        });
+      }
+    }
+  }
 
   void _navigateToApp() {
     if (selectedDevice == null) return;
@@ -64,6 +194,43 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isCheckingPreferences) {
+      return Scaffold(
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                const Color(0xFF0D0D1A),
+                const Color(0xFF1A1A2E),
+              ],
+            ),
+          ),
+          child: const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(
+                  color: Color(0xFF00E5FF),
+                ),
+                SizedBox(height: 16),
+                Text(
+                  'Loading...',
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Show saved device page if device is saved
+    if (_hasSavedDevice) {
+      return _buildSavedDevicePage();
+    }
+
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
@@ -168,6 +335,227 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildSavedDevicePage() {
+    final deviceType = _savedDeviceInfo['type'] ?? 'Unknown';
+    final deviceName = _savedDeviceInfo['name'] ?? 'Unknown Device';
+    final deviceId = _savedDeviceInfo['id'] ?? 'Unknown';
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFF0D0D1A),
+              const Color(0xFF1A1A2E),
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Saved device icon
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF00E5FF).withOpacity(0.1),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: const Color(0xFF00E5FF),
+                        width: 2,
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.bookmark,
+                      size: 60,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  
+                  // Title
+                  const Text(
+                    'Saved Device Found',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Connect to your previously saved device',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.white60,
+                    ),
+                  ),
+                  const SizedBox(height: 48),
+
+                  // Device info card
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A1A2E),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFF00E5FF).withOpacity(0.3),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              deviceType == 'EDLI' ? Icons.bluetooth : Icons.settings_remote,
+                              color: const Color(0xFF00E5FF),
+                              size: 28,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              deviceType,
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF00E5FF),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        _buildInfoRow('Device Name:', deviceName),
+                        const SizedBox(height: 8),
+                        _buildInfoRow('Device ID:', deviceId),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 48),
+
+                  // Connect Button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        await _autoConnectAndNavigate(deviceType, deviceId);
+                      },
+                      icon: const Icon(Icons.bluetooth_connected),
+                      label: const Text(
+                        'Connect to Saved Device',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00E5FF),
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 8,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Select Different Device Button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _hasSavedDevice = false;
+                        });
+                      },
+                      icon: const Icon(Icons.devices),
+                      label: const Text(
+                        'Select Different Device',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: const BorderSide(
+                          color: Colors.white30,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Clear Saved Device Button
+                  TextButton.icon(
+                    onPressed: () async {
+                      await DevicePreferences.clearDevice();
+                      setState(() {
+                        _hasSavedDevice = false;
+                      });
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Saved device cleared'),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.bookmark_remove, size: 18),
+                    label: const Text('Clear Saved Device'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white38,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 14,
+            color: Colors.white60,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(
+              fontSize: 14,
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 }

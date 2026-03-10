@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:http/http.dart' as http;
-import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
+import '../device_preferences.dart';
 import 'adminfragment.dart';
 import 'homefragment.dart';
 import 'configfragment.dart';
@@ -13,26 +11,16 @@ import 'settingfragment.dart';
 import 'ledstatusfragment.dart';
 
 // ─────────────────────────────────────────────────────────────
-// HTTP OVERRIDES - Bypass SSL certificate verification
-// ─────────────────────────────────────────────────────────────
-class MyHttpOverrides extends HttpOverrides {
-  @override
-  HttpClient createHttpClient(SecurityContext? context) {
-    return super.createHttpClient(context)
-      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
 // ENTRY POINT
 // ─────────────────────────────────────────────────────────────
 void main() {
-  HttpOverrides.global = MyHttpOverrides();
   runApp(const BLEAsciiApp());
 }
 
 class BLEAsciiApp extends StatelessWidget {
-  const BLEAsciiApp({super.key});
+  final BluetoothDevice? autoConnectDevice;
+  
+  const BLEAsciiApp({super.key, this.autoConnectDevice});
   
   @override
   Widget build(BuildContext context) {
@@ -48,7 +36,7 @@ class BLEAsciiApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0D0D1A),
         useMaterial3: true,
       ),
-      home: const BLETerminalScreen(),
+      home: BLETerminalScreen(autoConnectDevice: autoConnectDevice),
     );
   }
 }
@@ -174,16 +162,14 @@ class BLEManager extends ChangeNotifier {
   bool isConnected = false;
   String status = 'Disconnected';
   List<String> logs = [];
-  
-  bool _initialQuerySent = false;
-  bool _query0001Sent = false; // Track if ?0001! command has been sent
-  String? _pendingHmacResponse; // Store response waiting for API call
-  bool isDeviceRegistered = true; // Track if device is registered (default true until checked)
-  String? registrationError; // Store registration error message
-  bool isDeviceActivated = true; // Track if device is activated (default true until checked)
-  String? field94Value; // Store FIELD_94 value for activation check
-  List<String> _fullArrayHex = []; // Store all 96 fields for activation
-  String? hmacHash; // Store HMAC hash for activation
+
+  // ── Custom command fields (for modbus) ───────────────────────────────
+  String slaveID        = '';
+  String functionCode   = '3';
+  String startRegister  = '';
+  String quantity       = '';
+  String registerValues = '';
+  String generatedHex   = '';
 
   // ── PUBLIC: connect / disconnect ──────────────────────────
   Future<void> startScan() async {
@@ -203,99 +189,6 @@ class BLEManager extends ChangeNotifier {
 
   Future<void> disconnect() async {
     await _device?.disconnect();
-  }
-
-  // ── PUBLIC: activate device ───────────────────────────────
-  Future<void> activateDevice() async {
-    if (!isConnected) {
-      logs.add('ERROR: Not connected to device');
-      notifyListeners();
-      return;
-    }
-
-    if (_fullArrayHex.isEmpty || _fullArrayHex.length < 109) {
-      logs.add('ERROR: Insufficient field data for activation (need at least 109 fields, have ${_fullArrayHex.length})');
-      notifyListeners();
-      return;
-    }
-
-    if (hmacHash == null || hmacHash!.isEmpty) {
-      logs.add('ERROR: No HMAC hash available for activation');
-      notifyListeners();
-      return;
-    }
-
-    try {
-      logs.add('Starting device activation...');
-      notifyListeners();
-
-      // Divide the 64-character hash into 16 parts of 4 characters each
-      final hashParts = <String>[];
-      for (int i = 0; i < hmacHash!.length; i += 4) {
-        if (i + 4 <= hmacHash!.length) {
-          final part = hmacHash!.substring(i, i + 4).toUpperCase();
-          
-          // Byte-swap each 4-character part: split into 2 parts and swap
-          // e.g., "E67C" -> "7CE6" (E6|7C -> 7C|E6)
-          if (part.length == 4) {
-            final firstByte = part.substring(0, 2);
-            final secondByte = part.substring(2, 4);
-            final swapped = secondByte + firstByte;
-            hashParts.add(swapped);
-          } else {
-            hashParts.add(part);
-          }
-        }
-      }
-
-      if (hashParts.length != 16) {
-        logs.add('ERROR: Invalid HMAC hash length (expected 64 characters, got ${hmacHash!.length})');
-        notifyListeners();
-        return;
-      }
-
-      logs.add('HMAC divided and byte-swapped into 16 parts: ${hashParts.join(", ")}');
-
-      // Create a copy of the full array and modify FIELD_94 to FIELD_109
-      final modifiedArray = List<String>.from(_fullArrayHex);
-      
-      // Write hash parts to FIELD_94 through FIELD_109 (indices 93-108)
-      for (int i = 0; i < hashParts.length; i++) {
-        modifiedArray[93 + i] = hashParts[i];
-      }
-
-      logs.add('Writing activation data to FIELD_94 through FIELD_109...');
-      notifyListeners();
-
-      // Build the write command: |field1,field2,...,fieldN!
-      final commandString = '|${modifiedArray.join(',')}!';
-      
-      // Send the write command
-      await sendLongString(commandString);
-      logs.add('Activation write command sent');
-      notifyListeners();
-
-      // Wait and send verification commands
-      await Future.delayed(const Duration(milliseconds: 500));
-      await sendString('?0002!');
-      logs.add('Verification command ?0002! sent');
-      notifyListeners();
-
-      await Future.delayed(const Duration(milliseconds: 500));
-      await sendString('?0005!');
-      logs.add('Verification command ?0005! sent');
-      notifyListeners();
-
-      // Update activation status
-      isDeviceActivated = true;
-      field94Value = hashParts[0]; // FIELD_94 now has first part of hash
-      logs.add('Device activation completed successfully!');
-      notifyListeners();
-
-    } catch (e) {
-      logs.add('ERROR: Activation failed: $e');
-      notifyListeners();
-    }
   }
 
   // ── PUBLIC: send ASCII string ─────────────────────────────
@@ -361,234 +254,120 @@ class BLEManager extends ChangeNotifier {
     }
   }
 
-  // ── AUTO-QUERY: Send ?0005! then ?0001! on connect and call HMAC API ──
-  Future<void> _sendInitialQueryAndCallApi() async {
-    if (_initialQuerySent || !isConnected) return;
-    
-    _initialQuerySent = true;
-    logs.add('Sending initial query ?0005!...');
-    notifyListeners();
-    
-    try {
-      // First send ?0005! command
-      await sendString('?0005!');
-      
-      // Wait 3 seconds
-      await Future.delayed(const Duration(seconds: 3));
-      
-      // Then send ?0001! command
-      logs.add('Sending query ?0001!...');
-      notifyListeners();
-      _query0001Sent = true;
-      await sendString('?0001!');
-      
-      // Response will be handled in _parseAndLogRxData
-      // which will trigger _processHmacFields if response contains field data
-    } catch (e) {
-      logs.add('ERROR: Failed to send initial query: $e');
-      notifyListeners();
+  // ─────────────────────────────────────────────────────────────
+  // CUSTOM COMMAND (Custom tab) - MODBUS
+  // ─────────────────────────────────────────────────────────────
+  void sendCustomCommand() {
+    final sid = int.tryParse(slaveID);
+    final fc  = int.tryParse(functionCode);
+    final st  = int.tryParse(startRegister);
+
+    if (sid == null || fc == null || st == null) {
+      logs.add('ERROR: Invalid input'); notifyListeners(); return;
+    }
+
+    if (fc == 3) {
+      final qt = int.tryParse(quantity);
+      if (qt == null) {
+        logs.add('ERROR: Invalid quantity'); notifyListeners(); return;
+      }
+      final f = _buildReadFrame(slave: sid, start: st, qty: qt);
+      generatedHex = _toHexString(f);
+      _sendFrame(f, logTX: true);
+
+    } else if (fc == 16) {
+      final parts = registerValues
+          .split('+')
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toList();
+      if (parts.isEmpty) {
+        logs.add('ERROR: No values (use + separator)'); notifyListeners(); return;
+      }
+      final f = _buildWriteFrame(slave: sid, start: st, values: parts);
+      generatedHex = _toHexString(f);
+      _sendFrame(f, logTX: true);
+
+    } else {
+      logs.add('ERROR: FC must be 3 or 16'); notifyListeners();
     }
   }
 
-  Future<void> _processHmacFields(String jsonResponse) async {
+  // ─────────────────────────────────────────────────────────────
+  // MODBUS FRAME BUILDERS
+  // ─────────────────────────────────────────────────────────────
+
+  /// FC 03 read request
+  Uint8List _buildReadFrame({
+    required int slave,
+    required int start,
+    required int qty,
+  }) {
+    final d = <int>[
+      slave, 0x03,
+      (start >> 8) & 0xFF, start & 0xFF,
+      (qty   >> 8) & 0xFF, qty   & 0xFF,
+    ];
+    _appendCRC(d);
+    return Uint8List.fromList(d);
+  }
+
+  /// FC 16 write multiple registers
+  Uint8List _buildWriteFrame({
+    required int slave,
+    required int start,
+    required List<int> values,
+  }) {
+    final qty = values.length;
+    final d = <int>[
+      slave, 0x10,
+      (start >> 8) & 0xFF, start & 0xFF,
+      (qty   >> 8) & 0xFF, qty   & 0xFF,
+      qty * 2,
+    ];
+    for (final v in values) {
+      d.add((v >> 8) & 0xFF);
+      d.add( v       & 0xFF);
+    }
+    _appendCRC(d);
+    return Uint8List.fromList(d);
+  }
+
+  void _appendCRC(List<int> d) {
+    final crc = _crc16(d);
+    d.add( crc       & 0xFF); // CRC low
+    d.add((crc >> 8) & 0xFF); // CRC high
+  }
+
+  int _crc16(List<int> data) {
+    int crc = 0xFFFF;
+    for (final b in data) {
+      crc ^= b & 0xFF;
+      for (int i = 0; i < 8; i++) {
+        crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xA001 : crc >> 1;
+      }
+    }
+    return crc;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // SEND MODBUS FRAME
+  // ─────────────────────────────────────────────────────────────
+  Future<void> _sendFrame(Uint8List data, {required bool logTX}) async {
+    if (_writeChar == null) {
+      logs.add('ERROR: Not connected'); notifyListeners(); return;
+    }
     try {
-      // Extract all fields dynamically up to FIELD_120 (to support up to FIELD_109 for activation)
-      _fullArrayHex.clear();
-      for (int fieldNum = 1; fieldNum <= 120; fieldNum++) {
-        final fieldName = 'FIELD_$fieldNum';
-        final pattern = '"$fieldName": "';
-        
-        final startIndex = jsonResponse.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonResponse.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            final hexValue = jsonResponse.substring(valueStart, valueEnd);
-            final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-            _fullArrayHex.add(cleanHex.isNotEmpty ? cleanHex : '0000');
-          } else {
-            _fullArrayHex.add('0000');
-          }
-        } else {
-          _fullArrayHex.add('0000');
-        }
-      }
-      
-      // Extract FIELD_88 to FIELD_93 for HMAC
-      final hexValues = <String>[];
-      for (int fieldNum = 88; fieldNum <= 93; fieldNum++) {
-        final fieldName = 'FIELD_$fieldNum';
-        final pattern = '"$fieldName": "';
-        
-        final startIndex = jsonResponse.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonResponse.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            final hexValue = jsonResponse.substring(valueStart, valueEnd);
-            // Remove pipe and other non-hex characters
-            final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-            final paddedHex = (cleanHex.isNotEmpty ? cleanHex : '0000').padLeft(4, '0');
-            
-            // Swap bytes: split into 2 parts and swap (e.g., "007E" -> "7E00")
-            if (paddedHex.length >= 4) {
-              final firstPart = paddedHex.substring(0, 2);
-              final secondPart = paddedHex.substring(2, 4);
-              final swapped = secondPart + firstPart;
-              hexValues.add(swapped);
-            } else {
-              hexValues.add('0000');
-            }
-          } else {
-            hexValues.add('0000');
-          }
-        } else {
-          hexValues.add('0000');
-        }
-      }
-      
-      // Extract FIELD_94 for activation check
-      final field94Pattern = '"FIELD_94": "';
-      final field94StartIndex = jsonResponse.indexOf(field94Pattern);
-      if (field94StartIndex != -1) {
-        final field94ValueStart = field94StartIndex + field94Pattern.length;
-        final field94ValueEnd = jsonResponse.indexOf('"', field94ValueStart);
-        if (field94ValueEnd != -1) {
-          final hexValue = jsonResponse.substring(field94ValueStart, field94ValueEnd);
-          final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-          field94Value = cleanHex.isNotEmpty ? cleanHex : '0000';
-          logs.add('FIELD_94 extracted: $field94Value');
-        }
-      }
-      
-      // Concatenate all hex values (already byte-swapped)
-      final concatenatedHex = hexValues.join('');
-      logs.add('HMAC hex extracted (byte-swapped): $concatenatedHex');
-      notifyListeners();
-      
-      // Make POST request to API
-      await _sendHmacToApi(concatenatedHex);
-      
+      final noResp = _writeChar!.properties.writeWithoutResponse;
+      await _writeChar!.write(data, withoutResponse: noResp);
+      if (logTX) { logs.add('TX: ${_toHexString(data)}'); notifyListeners(); }
     } catch (e) {
-      logs.add('ERROR: Failed to process HMAC fields: $e');
-      notifyListeners();
+      logs.add('TX ERROR: $e'); notifyListeners();
     }
   }
 
-  Future<void> _sendHmacToApi(String hexString) async {
-    try {
-      logs.add('Sending HMAC to API...');
-      notifyListeners();
-      
-      // Get actual device location
-      String locationString = 'Unknown';
-      try {
-        // Check location permission
-        LocationPermission permission = await Geolocator.checkPermission();
-        if (permission == LocationPermission.denied) {
-          logs.add('Location permission denied, requesting...');
-          permission = await Geolocator.requestPermission();
-        }
-        
-        if (permission == LocationPermission.deniedForever) {
-          logs.add('Location permission permanently denied');
-          locationString = 'Permission Denied';
-        } else if (permission == LocationPermission.denied) {
-          logs.add('Location permission denied by user');
-          locationString = 'Permission Denied';
-        } else {
-          // Get current position
-          logs.add('Fetching device location...');
-          final Position position = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.high,
-            timeLimit: const Duration(seconds: 10),
-          ).catchError((error) {
-            logs.add('Failed to get location: $error');
-            return Position(
-              latitude: 0,
-              longitude: 0,
-              timestamp: DateTime.now(),
-              accuracy: 0,
-              altitude: 0,
-              heading: 0,
-              speed: 0,
-              speedAccuracy: 0,
-              altitudeAccuracy: 0,
-              headingAccuracy: 0,
-            );
-          });
-          
-          if (position.latitude != 0 && position.longitude != 0) {
-            locationString = '${position.latitude},${position.longitude}';
-            logs.add('Location obtained: $locationString');
-          } else {
-            locationString = 'Unknown';
-            logs.add('Location unavailable');
-          }
-        }
-      } catch (locationError) {
-        logs.add('Location error: $locationError');
-        locationString = 'Error';
-      }
-      
-      final url = Uri.parse('https://levelstate-server-flask.onrender.com/hmac');
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'hex': hexString,
-          'location': locationString,
-        }),
-      );
-      
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        logs.add('HMAC API success: ${response.body}');
-        
-        // Parse the response to check device registration
-        try {
-          final responseData = jsonDecode(response.body);
-          final hmacValue = responseData['hmac_sha256']?.toString() ?? '';
-          
-          if (hmacValue == '-1') {
-            isDeviceRegistered = false;
-            registrationError = 'Device is not registered';
-            logs.add('WARNING: Device is not registered (HMAC: -1)');
-          } else {
-            isDeviceRegistered = true;
-            registrationError = null;
-            hmacHash = hmacValue; // Store HMAC hash for activation
-            logs.add('Device registration verified (HMAC: $hmacValue)');
-            
-            // Check activation status (FIELD_94)
-            if (field94Value != null && field94Value == '0000') {
-              isDeviceActivated = false;
-              logs.add('WARNING: Device is registered but not activated (FIELD_94: 0000)');
-            } else {
-              isDeviceActivated = true;
-              logs.add('Device activation verified (FIELD_94: ${field94Value ?? "unknown"})');
-            }
-          }
-        } catch (parseError) {
-          logs.add('ERROR: Failed to parse HMAC response: $parseError');
-          // Assume registered if we can't parse (fail open)
-          isDeviceRegistered = true;
-          isDeviceActivated = true;
-        }
-      } else {
-        logs.add('HMAC API error: ${response.statusCode} - ${response.body}');
-        // Assume registered if API fails (fail open)
-        isDeviceRegistered = true;
-        isDeviceActivated = true;
-      }
-      notifyListeners();
-      
-    } catch (e) {
-      logs.add('ERROR: Failed to send HMAC to API: $e');
-      // Assume registered if request fails (fail open)
-      isDeviceRegistered = true;
-      notifyListeners();
-    }
-  }
+  String _toHexString(Uint8List data) =>
+      data.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
 
   // ── PRIVATE: scan and connect ─────────────────────────────
   Future<void> _startScan() async {
@@ -636,15 +415,6 @@ class BLEManager extends ChangeNotifier {
           _writeChar = null;
           _notifyChar = null;
           _notifySub?.cancel();
-          _initialQuerySent = false;
-          _query0001Sent = false;
-          _pendingHmacResponse = null;
-          isDeviceRegistered = true; // Reset registration status
-          registrationError = null;
-          isDeviceActivated = true; // Reset activation status
-          field94Value = null;
-          _fullArrayHex.clear(); // Clear stored fields
-          hmacHash = null; // Clear HMAC hash
           logs.add('Disconnected');
           notifyListeners();
         }
@@ -679,9 +449,6 @@ class BLEManager extends ChangeNotifier {
           _notifySub = c.onValueReceived.listen(_handleReceive);
           logs.add('Characteristics configured');
           notifyListeners();
-          
-          // Send initial query and call API
-          await _sendInitialQueryAndCallApi();
           return;
         }
       }
@@ -704,9 +471,6 @@ class BLEManager extends ChangeNotifier {
     if (_writeChar != null) {
       logs.add('Characteristics configured');
       notifyListeners();
-      
-      // Send initial query and call API
-      await _sendInitialQueryAndCallApi();
     } else {
       status = 'No writable characteristic found';
       logs.add('ERROR: No writable characteristic found');
@@ -771,12 +535,6 @@ class BLEManager extends ChangeNotifier {
       
       buffer.write('}');
       logs.add(buffer.toString());
-      
-      // If this is response to ?0001! query, process HMAC fields
-      if (_query0001Sent && _pendingHmacResponse == null) {
-        _pendingHmacResponse = buffer.toString();
-        _processHmacFields(buffer.toString());
-      }
     } else {
       // Simple message, just log it
       logs.add('RX: $fullData');
@@ -799,7 +557,9 @@ class BLEManager extends ChangeNotifier {
 // BLE TERMINAL SCREEN
 // ─────────────────────────────────────────────────────────────
 class BLETerminalScreen extends StatefulWidget {
-  const BLETerminalScreen({super.key});
+  final BluetoothDevice? autoConnectDevice;
+  
+  const BLETerminalScreen({super.key, this.autoConnectDevice});
   
   @override
   State<BLETerminalScreen> createState() => _BLETerminalScreenState();
@@ -809,12 +569,28 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
     with SingleTickerProviderStateMixin {
   final BLEManager _ble = BLEManager();
   late TabController _tabController;
+  bool _isSaved = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 6, vsync: this);
     _ble.addListener(_onUpdate);
+    _checkSavedStatus();
+    
+    // Auto-connect if device is provided
+    if (widget.autoConnectDevice != null) {
+      Future.delayed(Duration.zero, () {
+        _ble.connectToDevice(widget.autoConnectDevice!);
+      });
+    }
+  }
+
+  Future<void> _checkSavedStatus() async {
+    final saved = await DevicePreferences.hasSavedDevice();
+    setState(() {
+      _isSaved = saved;
+    });
   }
 
   @override
@@ -828,6 +604,46 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
   void _onUpdate() {
     if (!mounted) return;
     setState(() {});
+  }
+
+  Future<void> _toggleSaveDevice() async {
+    if (_isSaved) {
+      // Unsave the device
+      await DevicePreferences.clearDevice();
+      setState(() {
+        _isSaved = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Device connection cleared'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } else {
+      // Save the device
+      if (_ble._device != null) {
+        await DevicePreferences.saveDevice(
+          deviceType: 'EDLI',
+          deviceId: _ble._device!.remoteId.toString(),
+          deviceName: _ble._device!.platformName.isNotEmpty 
+              ? _ble._device!.platformName 
+              : 'EDLI Device',
+        );
+        setState(() {
+          _isSaved = true;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Device connection saved! App will auto-connect on next launch.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    }
   }
 
   Future<void> _showDeviceSelectionDialog() async {
@@ -1066,27 +882,62 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                     ),
                   ),
                 ),
+                // Save/Unsave button (only show when connected)
+                if (_ble.isConnected)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: GestureDetector(
+                      onTap: _toggleSaveDevice,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: _isSaved 
+                              ? Colors.orange.withOpacity(0.2)
+                              : Colors.green.withOpacity(0.2),
+                          border: Border.all(
+                            color: _isSaved ? Colors.orange : Colors.green,
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _isSaved ? Icons.bookmark : Icons.bookmark_border,
+                              size: 16,
+                              color: _isSaved ? Colors.orange : Colors.green,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _isSaved ? 'Unsave' : 'Save',
+                              style: TextStyle(
+                                color: _isSaved ? Colors.orange : Colors.green,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
 
           // Tab Views
           Expanded(
-            child: !_ble.isDeviceRegistered && _ble.isConnected
-                ? _buildUnregisteredDeviceView()
-                : _ble.isDeviceRegistered && !_ble.isDeviceActivated && _ble.isConnected
-                    ? _buildNotActivatedDeviceView()
-                    : TabBarView(
-                        controller: _tabController,
-                        children: [
-                          HomeFragment(bleManager: _ble),
-                          CustomCommandTab(ble: _ble),
-                          AdminFragment(bleManager: _ble),
-                          ConfigFragment(bleManager: _ble),
-                          LedStatusFragment(bleManager: _ble),
-                          SettingFragment(bleManager: _ble),
-                        ],
-                      ),
+            child: TabBarView(
+                controller: _tabController,
+                children: [
+                  LedStatusFragment(bleManager: _ble),
+                  HomeFragment(bleManager: _ble),
+                  CustomCommandTab(ble: _ble),
+                  AdminFragment(bleManager: _ble),
+                  ConfigFragment(bleManager: _ble),
+                  SettingFragment(bleManager: _ble),
+                ],
+              ),
           ),
 
           // Tab Bar at Bottom
@@ -1107,186 +958,23 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                 ),
               ],
             ),
-            child: IgnorePointer(
-              ignoring: (!_ble.isDeviceRegistered || !_ble.isDeviceActivated) && _ble.isConnected,
-              child: Opacity(
-                opacity: ((!_ble.isDeviceRegistered || !_ble.isDeviceActivated) && _ble.isConnected) ? 0.3 : 1.0,
-                child: TabBar(
-                  controller: _tabController,
-                  indicatorColor: const Color(0xFF00E5FF),
-                  indicatorWeight: 3,
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  labelColor: const Color(0xFF00E5FF),
-                  unselectedLabelColor: Colors.white38,
-                  tabs: const [
-                    Tab(icon: Icon(Icons.home, size: 24)),
-                    Tab(icon: Icon(Icons.terminal, size: 24)),
-                    Tab(icon: Icon(Icons.admin_panel_settings, size: 24)),
-                    Tab(icon: Icon(Icons.tune, size: 24)),
-                    Tab(icon: Icon(Icons.lightbulb_outline, size: 24)),
-                    Tab(icon: Icon(Icons.settings, size: 24)),
-                  ],
-                ),
-              ),
+            child: TabBar(
+              controller: _tabController,
+              indicatorColor: const Color(0xFF00E5FF),
+              indicatorWeight: 3,
+              indicatorSize: TabBarIndicatorSize.tab,
+              labelColor: const Color(0xFF00E5FF),
+              unselectedLabelColor: Colors.white38,
+              tabs: const [
+                Tab(icon: Icon(Icons.lightbulb_outline, size: 24)),
+                Tab(icon: Icon(Icons.home, size: 24)),
+                Tab(icon: Icon(Icons.terminal, size: 24)),
+                Tab(icon: Icon(Icons.admin_panel_settings, size: 24)),
+                Tab(icon: Icon(Icons.tune, size: 24)),
+                Tab(icon: Icon(Icons.settings, size: 24)),
+              ],
             ),
           ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildUnregisteredDeviceView() {
-    return Container(
-      color: const Color(0xFF0D0D1A),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Error icon
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.redAccent.withOpacity(0.1),
-                border: Border.all(
-                  color: Colors.redAccent,
-                  width: 2,
-                ),
-              ),
-              child: const Icon(
-                Icons.block,
-                size: 64,
-                color: Colors.redAccent,
-              ),
-            ),
-            const SizedBox(height: 32),
-            
-            // Error message
-            Text(
-              _ble.registrationError ?? 'Device is not registered',
-              style: const TextStyle(
-                color: Colors.redAccent,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            
-            // Additional info
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 48),
-              child: Text(
-                'This device is not authorized to use this application. Please contact your administrator to register this device.',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.6),
-                  fontSize: 14,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            const SizedBox(height: 32),
-            
-            // Disconnect button
-            ElevatedButton.icon(
-              onPressed: _ble.disconnect,
-              icon: const Icon(Icons.close),
-              label: const Text('Disconnect'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNotActivatedDeviceView() {
-    return Container(
-      color: const Color(0xFF0D0D1A),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Warning icon
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.orangeAccent.withOpacity(0.1),
-                border: Border.all(
-                  color: Colors.orangeAccent,
-                  width: 2,
-                ),
-              ),
-              child: const Icon(
-                Icons.warning_amber_rounded,
-                size: 64,
-                color: Colors.orangeAccent,
-              ),
-            ),
-            const SizedBox(height: 32),
-            
-            // Message
-            const Text(
-              'Device is registered but not activated',
-              style: TextStyle(
-                color: Colors.orangeAccent,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            
-            // Additional info
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 48),
-              child: Text(
-                'This device is registered but requires activation before use. Click the button below to activate it.',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.6),
-                  fontSize: 14,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            const SizedBox(height: 32),
-            
-            // Activate button
-            ElevatedButton.icon(
-              onPressed: () async {
-                await _ble.activateDevice();
-              },
-              icon: const Icon(Icons.check_circle),
-              label: const Text('Activate'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.greenAccent,
-                foregroundColor: Colors.black,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 32,
-                  vertical: 14,
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            
-            // Disconnect button (secondary)
-            TextButton.icon(
-              onPressed: _ble.disconnect,
-              icon: const Icon(Icons.close, size: 18),
-              label: const Text('Disconnect'),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white54,
-              ),
-            ),
           ],
         ),
       ),
@@ -1295,7 +983,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
 }
 
 // ─────────────────────────────────────────────────────────────
-// CUSTOM COMMAND TAB
+// CUSTOM COMMAND TAB - MODBUS
 // ─────────────────────────────────────────────────────────────
 class CustomCommandTab extends StatefulWidget {
   final BLEManager ble;
@@ -1307,19 +995,27 @@ class CustomCommandTab extends StatefulWidget {
 }
 
 class _CustomCommandTabState extends State<CustomCommandTab> {
-  final TextEditingController _msgCtrl = TextEditingController();
-  final ScrollController _scrollCtrl = ScrollController();
+  late final TextEditingController _slaveCtrl;
+  late final TextEditingController _startCtrl;
+  late final TextEditingController _qtyCtrl;
+  late final TextEditingController _valCtrl;
+  final _scrollCtrl = ScrollController();
 
   @override
   void initState() {
     super.initState();
+    _slaveCtrl = TextEditingController(text: widget.ble.slaveID);
+    _startCtrl = TextEditingController(text: widget.ble.startRegister);
+    _qtyCtrl   = TextEditingController(text: widget.ble.quantity);
+    _valCtrl   = TextEditingController(text: widget.ble.registerValues);
     widget.ble.addListener(_onUpdate);
   }
 
   @override
   void dispose() {
     widget.ble.removeListener(_onUpdate);
-    _msgCtrl.dispose();
+    _slaveCtrl.dispose(); _startCtrl.dispose();
+    _qtyCtrl.dispose();   _valCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -1327,142 +1023,215 @@ class _CustomCommandTabState extends State<CustomCommandTab> {
   void _onUpdate() {
     if (!mounted) return;
     setState(() {});
-    // Auto-scroll to bottom
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollCtrl.hasClients) {
+      if (_scrollCtrl.hasClients)
         _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
-      }
     });
   }
 
-  void _sendMessage() {
-    if (_msgCtrl.text.trim().isEmpty) return;
-    widget.ble.sendString(_msgCtrl.text);
-    _msgCtrl.clear();
+  void _send() {
+    widget.ble.slaveID        = _slaveCtrl.text;
+    widget.ble.startRegister  = _startCtrl.text;
+    widget.ble.quantity       = _qtyCtrl.text;
+    widget.ble.registerValues = _valCtrl.text;
+    widget.ble.sendCustomCommand();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Log area
-        Expanded(
-          child: Container(
-            color: const Color(0xFF0D0D1A),
-            child: ListView.builder(
-              controller: _scrollCtrl,
-              padding: const EdgeInsets.all(12),
-              itemCount: widget.ble.logs.length,
-              itemBuilder: (context, index) {
-                final log = widget.ble.logs[index];
-                final isTX = log.startsWith('TX:');
-                final isRX = log.startsWith('RX');
-                final isError = log.startsWith('ERROR');
-                final isJson = log.contains('{') && log.contains('}');
-                
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Container(
-                    padding: isJson ? const EdgeInsets.all(8) : null,
-                    decoration: isJson ? BoxDecoration(
-                      color: const Color(0xFF1A1A2E),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Colors.greenAccent.withOpacity(0.3),
-                      ),
-                    ) : null,
-                    child: Text(
-                      log,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: isJson ? 11 : 12,
-                        height: 1.4,
-                        color: isError
-                            ? Colors.redAccent
-                            : isTX
-                                ? const Color(0xFF00E5FF)
-                                : isRX
-                                    ? Colors.greenAccent
-                                    : Colors.white70,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
+    final isWrite = widget.ble.functionCode == '16';
+
+    return Column(children: [
+      // Header
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF12121F),
+          border: Border(
+            bottom: BorderSide(color: Colors.cyan.withOpacity(0.15)),
           ),
         ),
-
-        // Input area
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFF12121F),
-            border: Border(
-              top: BorderSide(color: Colors.cyan.withOpacity(0.15)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _msgCtrl,
-                  enabled: widget.ble.isConnected,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Enter ASCII command...',
-                    hintStyle: const TextStyle(color: Colors.white38),
-                    filled: true,
-                    fillColor: const Color(0xFF1A1A2E),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: Colors.white12),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: Colors.white12),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: Color(0xFF00E5FF)),
-                    ),
-                  ),
-                  onSubmitted: (_) => _sendMessage(),
-                ),
+        child: Row(
+          children: [
+            const Icon(Icons.terminal, color: Color(0xFF00E5FF), size: 20),
+            const SizedBox(width: 8),
+            const Text(
+              'CUSTOM COMMAND',
+              style: TextStyle(
+                color: Color(0xFF00E5FF),
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
               ),
-              const SizedBox(width: 12),
-              ElevatedButton(
-                onPressed: widget.ble.isConnected ? _sendMessage : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00E5FF),
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 16,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+            ),
+            const Spacer(),
+            if (widget.ble.isConnected)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.greenAccent.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.greenAccent),
                 ),
                 child: const Text(
-                  'Send',
+                  'Connected',
                   style: TextStyle(
+                    color: Colors.greenAccent,
+                    fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    fontSize: 14,
                   ),
                 ),
               ),
-            ],
+          ],
+        ),
+      ),
+
+      Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(children: [
+          Row(children: [
+            Expanded(child: _Field(ctrl: _slaveCtrl, label: 'Slave ID', hint: '247')),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _dropdown(
+                value: widget.ble.functionCode,
+                items: const {'3': 'FC 3 – Read', '16': 'FC 16 – Write'},
+                onChanged: (v) => setState(() => widget.ble.functionCode = v!),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: _Field(ctrl: _startCtrl, label: 'Start Register', hint: '4')),
+            const SizedBox(width: 12),
+            Expanded(
+              child: isWrite
+                  ? _Field(ctrl: _valCtrl, label: 'Values (+ sep)', hint: '100+200')
+                  : _Field(ctrl: _qtyCtrl, label: 'Quantity', hint: '10'),
+            ),
+          ]),
+          const SizedBox(height: 14),
+
+          if (widget.ble.generatedHex.isNotEmpty)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0D1A0D),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.greenAccent.withOpacity(0.3)),
+              ),
+              child: Text('HEX: ${widget.ble.generatedHex}',
+                  style: const TextStyle(
+                      color: Colors.greenAccent,
+                      fontFamily: 'monospace', fontSize: 12)),
+            ),
+
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.ble.isConnected ? _send : null,
+              icon:  const Icon(Icons.send_rounded, size: 18),
+              label: const Text('Generate & Send'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF),
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ),
+        ]),
+      ),
+
+      const Divider(color: Colors.white10, height: 1),
+
+      Expanded(
+        child: ListView.builder(
+          controller: _scrollCtrl,
+          padding: const EdgeInsets.all(12),
+          itemCount: widget.ble.logs.length,
+          itemBuilder: (_, i) {
+            final log   = widget.ble.logs[i];
+            final isTX  = log.startsWith('TX:');
+            final isErr = log.startsWith('ERROR') || log.startsWith('TX ERROR');
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(log,
+                  style: TextStyle(
+                      fontFamily: 'monospace', fontSize: 11,
+                      color: isErr
+                          ? Colors.redAccent
+                          : isTX
+                              ? const Color(0xFF00E5FF)
+                              : Colors.greenAccent)),
+            );
+          },
+        ),
+      ),
+    ]);
+  }
+
+  Widget _dropdown({
+    required String value,
+    required Map<String, String> items,
+    required ValueChanged<String?> onChanged,
+  }) =>
+      Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A2E),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white12),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: value,
+            dropdownColor: const Color(0xFF1A1A2E),
+            style: const TextStyle(color: Colors.white, fontFamily: 'monospace'),
+            onChanged: onChanged,
+            items: items.entries
+                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                .toList(),
           ),
         ),
-      ],
-    );
-  }
+      );
 }
+
+// ─────────────────────────────────────────────────────────────
+// SHARED: STYLED TEXT FIELD
+// ─────────────────────────────────────────────────────────────
+class _Field extends StatelessWidget {
+  final TextEditingController ctrl;
+  final String label, hint;
+  const _Field({required this.ctrl, required this.label, required this.hint});
+
+  @override
+  Widget build(BuildContext context) => TextField(
+        controller: ctrl,
+        keyboardType: TextInputType.number,
+        style: const TextStyle(
+            color: Colors.white, fontFamily: 'monospace', fontSize: 13),
+        decoration: InputDecoration(
+          labelText: label,
+          hintText:  hint,
+          labelStyle: const TextStyle(color: Colors.white54, fontSize: 12),
+          hintStyle:  const TextStyle(color: Colors.white24, fontSize: 12),
+          filled: true,
+          fillColor: const Color(0xFF1A1A2E),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: Colors.white12)),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: Colors.white12)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: Color(0xFF00E5FF))),
+        ),
+      );
+}
+

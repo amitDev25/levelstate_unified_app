@@ -130,7 +130,7 @@ class _HomeFragmentState extends State<HomeFragment> {
 
     await widget.bleManager.sendString('?0003!');
     
-    Future.delayed(const Duration(seconds: 5), () {
+    Future.delayed(const Duration(seconds: 15), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;

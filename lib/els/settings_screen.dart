@@ -11,7 +11,15 @@ import 'main.dart' show BLEManager;
 
 class SettingsScreen extends StatefulWidget {
   final BLEManager ble;
-  const SettingsScreen({super.key, required this.ble});
+  final bool? isSaved;
+  final VoidCallback? onToggleSave;
+  
+  const SettingsScreen({
+    super.key, 
+    required this.ble,
+    this.isSaved,
+    this.onToggleSave,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
