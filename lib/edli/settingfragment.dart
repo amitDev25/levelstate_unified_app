@@ -177,6 +177,10 @@ class _SettingFragmentState extends State<SettingFragment> {
       _channels.clear();
     });
 
+    // Write 1 to register 0 before reading
+    await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
+    await Future.delayed(const Duration(milliseconds: 200));
+    
     await widget.bleManager.sendString('?0001!');
     
     Future.delayed(const Duration(seconds: 15), () {
@@ -347,14 +351,13 @@ class _SettingFragmentState extends State<SettingFragment> {
         // Send the write command
         await widget.bleManager.sendString(commandString);
 
-        // Wait a moment, then send ?0002!
-        await Future.delayed(const Duration(milliseconds: 500));
-        await widget.bleManager.sendString('?0002!');
-        await Future.delayed(const Duration(milliseconds: 500));
-        await widget.bleManager.sendString('?0005!');
-
-        // Small delay to ensure operations complete
-        await Future.delayed(const Duration(milliseconds: 100));
+        // Write 2 to register 0 to commit
+        await Future.delayed(const Duration(seconds: 1));
+        await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
+        
+        // Wait 1 second, then write 5 to register 0 to finalize
+        await Future.delayed(const Duration(seconds: 1));
+        await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
 
         // Cancel timeout and close dialog
         timeoutTimer.cancel();
@@ -362,7 +365,7 @@ class _SettingFragmentState extends State<SettingFragment> {
           Navigator.of(context, rootNavigator: true).pop();
           dialogShown = false;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Write successful! Sent ?0002!')),
+            const SnackBar(content: Text('Write successful! Configuration saved.')),
           );
         }
       } catch (e) {

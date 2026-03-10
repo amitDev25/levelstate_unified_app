@@ -171,6 +171,13 @@ class BLEManager extends ChangeNotifier {
   String registerValues = '';
   String generatedHex   = '';
 
+  // ── Modbus response handling for fragments ──────────────────────────────
+  Uint8List lastModbusResponse = Uint8List(0);
+  VoidCallback? onModbusResponse;
+  final int defaultSlaveID = 247;
+  List<int> _rxBuffer_modbus = [];
+  Timer? _modbusFrameTimer;
+
   // ── PUBLIC: connect / disconnect ──────────────────────────
   Future<void> startScan() async {
     availableDevices.clear();
@@ -358,6 +365,10 @@ class BLEManager extends ChangeNotifier {
       logs.add('ERROR: Not connected'); notifyListeners(); return;
     }
     try {
+      // Clear any pending Modbus frame data to prevent collision
+      _modbusFrameTimer?.cancel();
+      _rxBuffer_modbus.clear();
+      
       final noResp = _writeChar!.properties.writeWithoutResponse;
       await _writeChar!.write(data, withoutResponse: noResp);
       if (logTX) { logs.add('TX: ${_toHexString(data)}'); notifyListeners(); }
@@ -368,6 +379,70 @@ class BLEManager extends ChangeNotifier {
 
   String _toHexString(Uint8List data) =>
       data.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+
+  // ─────────────────────────────────────────────────────────────
+  // PUBLIC MODBUS READ/WRITE METHODS FOR FRAGMENTS
+  // ─────────────────────────────────────────────────────────────
+  
+  /// Read multiple registers (FC 3)
+  Future<void> readRegisters({
+    int? slaveID,
+    required int startRegister,
+    required int quantity,
+  }) async {
+    final sid = slaveID ?? defaultSlaveID;
+    final frame = _buildReadFrame(
+      slave: sid,
+      start: startRegister,
+      qty: quantity,
+    );
+    logs.add('Reading $quantity registers from $startRegister (Slave: $sid)');
+    await _sendFrame(frame, logTX: true);
+  }
+
+  /// Write multiple registers (FC 16)
+  Future<void> writeRegisters({
+    int? slaveID,
+    required int startRegister,
+    required List<int> values,
+  }) async {
+    final sid = slaveID ?? defaultSlaveID;
+    final frame = _buildWriteFrame(
+      slave: sid,
+      start: startRegister,
+      values: values,
+    );
+    logs.add('Writing ${values.length} registers from $startRegister (Slave: $sid)');
+    await _sendFrame(frame, logTX: true);
+  }
+
+  /// Parse Modbus FC 3 read response
+  List<int> parseReadResponse(Uint8List frame) {
+    if (frame.length < 5) return [];
+    
+    final slaveID = frame[0];
+    final functionCode = frame[1];
+    final byteCount = frame[2];
+    
+    if (functionCode != 0x03) {
+      logs.add('ERROR: Expected FC 3, got $functionCode');
+      return [];
+    }
+    
+    if (frame.length < 3 + byteCount + 2) {
+      logs.add('ERROR: Incomplete frame');
+      return [];
+    }
+    
+    final values = <int>[];
+    for (int i = 0; i < byteCount; i += 2) {
+      final highByte = frame[3 + i];
+      final lowByte = frame[3 + i + 1];
+      values.add((highByte << 8) | lowByte);
+    }
+    
+    return values;
+  }
 
   // ── PRIVATE: scan and connect ─────────────────────────────
   Future<void> _startScan() async {
@@ -471,6 +546,15 @@ class BLEManager extends ChangeNotifier {
     if (_writeChar != null) {
       logs.add('Characteristics configured');
       notifyListeners();
+      
+      // Initialize device by writing 5 to register 0
+      await Future.delayed(const Duration(milliseconds: 500));
+      try {
+        await writeRegisters(startRegister: 0, values: [5]);
+        logs.add('Device initialized (wrote 5 to reg 0)');
+      } catch (e) {
+        logs.add('Failed to initialize device: $e');
+      }
     } else {
       status = 'No writable characteristic found';
       logs.add('ERROR: No writable characteristic found');
@@ -480,6 +564,71 @@ class BLEManager extends ChangeNotifier {
 
   // ── PRIVATE: handle received data ─────────────────────────
   void _handleReceive(List<int> data) {
+    // Check if this looks like a Modbus response
+    // Modbus frame starts with: SlaveID (247) + FunctionCode (0x03, 0x10, 0x06)
+    bool looksLikeModbus = false;
+    
+    if (data.isNotEmpty) {
+      // If buffer is empty and first byte is slave ID, likely Modbus
+      if (_rxBuffer_modbus.isEmpty && data.length >= 2 && data[0] == defaultSlaveID) {
+        final fc = data[1];
+        if (fc == 0x03 || fc == 0x10 || fc == 0x06) {
+          looksLikeModbus = true;
+        }
+      }
+      // If buffer already has data, continue accumulating
+      else if (_rxBuffer_modbus.isNotEmpty) {
+        looksLikeModbus = true;
+      }
+    }
+    
+    if (looksLikeModbus) {
+      // Cancel existing timer
+      _modbusFrameTimer?.cancel();
+      
+      // Accumulate data
+      _rxBuffer_modbus.addAll(data);
+      logs.add('RX chunk: ${_toHexString(Uint8List.fromList(data))} (buffered: ${_rxBuffer_modbus.length} bytes)');
+      
+      // Try to parse complete frame
+      bool frameComplete = false;
+      
+      if (_rxBuffer_modbus.length >= 5) {
+        final slaveID = _rxBuffer_modbus[0];
+        final fc = _rxBuffer_modbus[1];
+        
+        if (fc == 0x03) {
+          // Read response: slave + fc + bytecount + data + crc(2)
+          final byteCount = _rxBuffer_modbus[2];
+          final expectedLength = 5 + byteCount;
+          if (_rxBuffer_modbus.length >= expectedLength) {
+            frameComplete = true;
+          }
+        } else if (fc == 0x10 || fc == 0x06) {
+          // Write response: slave + fc + addr(2) + qty/value(2) + crc(2) = 8 bytes
+          if (_rxBuffer_modbus.length >= 8) {
+            frameComplete = true;
+          }
+        }
+      }
+      
+      if (frameComplete) {
+        // We have a complete frame
+        _modbusFrameTimer?.cancel();
+        _processCompleteModbusFrame();
+      } else {
+        // Wait for more data (200ms timeout)
+        _modbusFrameTimer = Timer(const Duration(milliseconds: 200), () {
+          if (_rxBuffer_modbus.isNotEmpty) {
+            logs.add('Modbus frame timeout, processing partial data...');
+            _processCompleteModbusFrame();
+          }
+        });
+      }
+      return;
+    }
+    
+    // Try to handle as ASCII (legacy support)
     try {
       final message = utf8.decode(data);
       
@@ -504,6 +653,23 @@ class BLEManager extends ChangeNotifier {
       logs.add('RX (HEX): $hex');
       notifyListeners();
     }
+  }
+  
+  void _processCompleteModbusFrame() {
+    if (_rxBuffer_modbus.isEmpty) return;
+    
+    final frame = Uint8List.fromList(_rxBuffer_modbus);
+    _rxBuffer_modbus.clear();
+    
+    lastModbusResponse = frame;
+    logs.add('RX Complete Frame: ${_toHexString(frame)}');
+    
+    // Notify listener if registered
+    if (onModbusResponse != null) {
+      onModbusResponse!();
+    }
+    
+    notifyListeners();
   }
   
   void _parseAndLogRxData(String fullData) {
@@ -546,6 +712,7 @@ class BLEManager extends ChangeNotifier {
   @override
   void dispose() {
     _parseTimer?.cancel();
+    _modbusFrameTimer?.cancel();
     _scanSub?.cancel();
     _notifySub?.cancel();
     _connSub?.cancel();

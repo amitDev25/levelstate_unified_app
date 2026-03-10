@@ -33,13 +33,13 @@ class _AdminFragmentState extends State<AdminFragment> {
     'Short Level': TextEditingController(text: '---'),
   };
   
-  List<String> _fullArrayHex = []; // Store complete hex array from response
+  Map<int, int> _registerData = {}; // Store register number -> value
   bool _isLoading = false;
   bool _isWriting = false;
+  bool _isSaving = false;
   bool _isResetting = false;
   bool _is4mAMode = false;
   bool _is20mAMode = false;
-  int _lastLogCount = 0;
   
   // Define which fields belong to which mode
   final List<String> _4mAFields = ['4mA Channel 1 Value', '4mA Channel 2 Value'];
@@ -50,7 +50,9 @@ class _AdminFragmentState extends State<AdminFragment> {
   void initState() {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
-    _lastLogCount = widget.bleManager.logs.length;
+    
+    // Set up Modbus response callback
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
     
     // Auto-send command when tab is opened
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -63,6 +65,7 @@ class _AdminFragmentState extends State<AdminFragment> {
   @override
   void dispose() {
     widget.bleManager.removeListener(_onBLEUpdate);
+    widget.bleManager.onModbusResponse = null;
     // Dispose all text controllers
     for (final controller in _controllers.values) {
       controller.dispose();
@@ -72,112 +75,59 @@ class _AdminFragmentState extends State<AdminFragment> {
 
   void _onBLEUpdate() {
     if (!mounted) return;
-    
-    // Check if there are new logs
-    if (widget.bleManager.logs.length > _lastLogCount) {
-      final newLogs = widget.bleManager.logs.sublist(_lastLogCount);
-      _lastLogCount = widget.bleManager.logs.length;
-      
-      // Look for JSON-formatted RX responses
-      for (final log in newLogs) {
-        if (log.startsWith('RX: {') && _isLoading) {
-          _parseJsonResponse(log);
-          break;
-        }
-      }
-    }
     setState(() {});
   }
-
-  void _parseJsonResponse(String jsonLog) {
-    if (!_isLoading) return;
+  
+  void _handleModbusResponse() {
+    if (!mounted || !_isLoading) return;
     
+    final response = widget.bleManager.lastModbusResponse;
+    
+    // Check if this is a read response (FC 3)
+    if (response.length < 2 || response[1] != 0x03) {
+      // Not a read response, ignore it
+      return;
+    }
+    
+    final values = widget.bleManager.parseReadResponse(response);
+    
+    if (values.isEmpty) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+    
+    // We read registers 5-15 (11 registers)
+    // Store in _registerData map
     setState(() {
-      // First, extract all hex values to store the complete array
-      _fullArrayHex.clear();
-      
-      // Parse all FIELD_X values in order (FIELD_1 to FIELD_96)
-      for (int i = 1; i <= 96; i++) {
-        final fieldName = 'FIELD_$i';
-        final pattern = '"$fieldName": "';
-        
-        final startIndex = jsonLog.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonLog.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            final hexValue = jsonLog.substring(valueStart, valueEnd);
-            // Remove pipe and other non-hex characters
-            final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-            _fullArrayHex.add(cleanHex.isNotEmpty ? cleanHex : '0000');
-          } else {
-            _fullArrayHex.add('0000');
-          }
-        } else {
-          _fullArrayHex.add('0000');
-        }
+      for (int i = 0; i < values.length; i++) {
+        _registerData[5 + i] = values[i];
       }
       
-      // Now extract and populate the 7 editable fields
-      // Looking for: FIELD_3 (4mA Channel 1 Value), FIELD_4 (20mA Channel 1 Value), FIELD_5 (4mA Channel 2 Value), FIELD_6 (20mA Channel 2 Value),
-      //              FIELD_11 (Steam Level), FIELD_12 (Water Level), FIELD_13 (Short Level)
-      final fieldMap = {
-        '4mA Channel 1 Value': 'FIELD_4',
-        '20mA Channel 1 Value': 'FIELD_5',
-        '4mA Channel 2 Value': 'FIELD_6',
-        '20mA Channel 2 Value': 'FIELD_7',
-        'Steam Level': 'FIELD_12',
-        'Water Level': 'FIELD_13',
-        'Short Level': 'FIELD_14',
-      };
-      
-      for (final entry in fieldMap.entries) {
-        final label = entry.key;
-        final fieldName = entry.value;
-        final pattern = '"$fieldName": "';
-        
-        final startIndex = jsonLog.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonLog.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            try {
-              final hexValue = jsonLog.substring(valueStart, valueEnd);
-              // Look for decimal value in parentheses
-              final decPattern = '(Dec: ';
-              final decStart = jsonLog.indexOf(decPattern, valueEnd);
-              if (decStart != -1) {
-                final decValueStart = decStart + decPattern.length;
-                final decValueEnd = jsonLog.indexOf(')', decValueStart);
-                if (decValueEnd != -1) {
-                  final decValue = jsonLog.substring(decValueStart, decValueEnd);
-                  _values[label] = decValue;
-                  _controllers[label]!.text = decValue;
-                  continue;
-                }
-              }
-              // Fallback: parse hex manually
-              final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-              final decValue = int.parse(cleanHex, radix: 16);
-              final decStr = decValue.toString();
-              _values[label] = decStr;
-              _controllers[label]!.text = decStr;
-            } catch (e) {
-              _values[label] = 'Error';
-              _controllers[label]!.text = 'Error';
-            }
-          } else {
-            _values[label] = '---';
-            _controllers[label]!.text = '---';
-          }
-        } else {
-          _values[label] = '---';
-          _controllers[label]!.text = '---';
-        }
-      }
+      // Update display values from registers
+      // Register mapping: Field N → Register (N+1)
+      _updateValueFromRegister('4mA Channel 1 Value', 5);    // FIELD_4 → Reg 5
+      _updateValueFromRegister('20mA Channel 1 Value', 6);   // FIELD_5 → Reg 6
+      _updateValueFromRegister('4mA Channel 2 Value', 7);    // FIELD_6 → Reg 7
+      _updateValueFromRegister('20mA Channel 2 Value', 8);   // FIELD_7 → Reg 8
+      _updateValueFromRegister('Steam Level', 13);           // FIELD_12 → Reg 13
+      _updateValueFromRegister('Water Level', 14);           // FIELD_13 → Reg 14
+      _updateValueFromRegister('Short Level', 15);           // FIELD_14 → Reg 15
       
       _isLoading = false;
     });
+  }
+  
+  void _updateValueFromRegister(String label, int register) {
+    if (_registerData.containsKey(register)) {
+      final value = _registerData[register]!;
+      _values[label] = value.toString();
+      _controllers[label]!.text = value.toString();
+    } else {
+      _values[label] = 'Error';
+      _controllers[label]!.text = 'Error';
+    }
   }
 
   void _sendCommand() async {
@@ -201,9 +151,14 @@ class _AdminFragmentState extends State<AdminFragment> {
       };
     });
 
-    await widget.bleManager.sendString('?0001!');
+    // Write 1 to register 0 before reading
+    await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
+    await Future.delayed(const Duration(milliseconds: 3000));
     
-    Future.delayed(const Duration(seconds: 15), () {
+    // Read registers 5-15 (11 registers) for all admin fields
+    await widget.bleManager.readRegisters(startRegister: 5, quantity: 11);
+    
+    Future.delayed(const Duration(seconds: 5), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
@@ -229,49 +184,40 @@ class _AdminFragmentState extends State<AdminFragment> {
       return;
     }
 
-    if (_fullArrayHex.isEmpty || _fullArrayHex.length != 96) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No data to write. Please read first.')),
-      );
-      return;
-    }
-
     setState(() {
       _isWriting = true;
     });
 
     try {
-      // Create a copy of the full array
-      final modifiedArray = List<String>.from(_fullArrayHex);
-
-      // Update the 7 editable fields with values from controllers
-      // Map: label -> (field index in array, which is field number - 1)
-      final editableFields = {
-        '4mA Channel 1 Value': 3,   // FIELD_4 is at index 3
-        '20mA Channel 1 Value': 4,   // FIELD_5 is at index 4
-        '4mA Channel 2 Value': 5,   // FIELD_6 is at index 5
-        '20mA Channel 2 Value': 6,   // FIELD_7 is at index 6
-        'Steam Level': 11, // FIELD_12 is at index 11
-        'Water Level': 12, // FIELD_13 is at index 12
-        'Short Level': 13, // FIELD_14 is at index 13
+      // Prepare register values from controllers
+      final registerWrites = <int, int>{};
+      
+      final fieldMap = {
+        '4mA Channel 1 Value': 5,
+        '20mA Channel 1 Value': 6,
+        '4mA Channel 2 Value': 7,
+        '20mA Channel 2 Value': 8,
+        'Steam Level': 13,
+        'Water Level': 14,
+        'Short Level': 15,
       };
 
-      // Update the array with edited values
-      for (final entry in editableFields.entries) {
+      // Parse all values
+      for (final entry in fieldMap.entries) {
         final label = entry.key;
-        final arrayIndex = entry.value;
+        final register = entry.value;
         final controller = _controllers[label];
 
         if (controller != null && controller.text.isNotEmpty) {
           try {
-            // Parse the decimal value from the text field
-            final decValue = int.parse(controller.text.trim());
-            // Convert to hex (uppercase, 4 digits with leading zeros)
-            final hexValue = decValue.toRadixString(16).toUpperCase().padLeft(4, '0');
-            modifiedArray[arrayIndex] = hexValue;
+            final value = int.parse(controller.text.trim());
+            if (value < 0 || value > 65535) {
+              throw FormatException('Value out of range');
+            }
+            registerWrites[register] = value;
           } catch (e) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Invalid value in ${entry.key} field')),
+              SnackBar(content: Text('Invalid value in $label field')),
             );
             setState(() {
               _isWriting = false;
@@ -281,152 +227,101 @@ class _AdminFragmentState extends State<AdminFragment> {
         }
       }
 
-      // Reconstruct the command string with "|" prefix and "!" suffix
-      final commandString = '|${modifiedArray.join(',')}!';
-
-      // Show dialog with command being sent
-      bool dialogShown = false;
-      if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A2E),
-            title: const Text(
-              'Sending Command',
-              style: TextStyle(color: Color(0xFF00E5FF)),
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Command String:',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0D0D1A),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: const Color(0xFF00E5FF).withOpacity(0.3),
-                      ),
-                    ),
-                    child: Text(
-                      commandString,
-                      style: const TextStyle(
-                        color: Color(0xFF00E5FF),
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Row(
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Color(0xFF00E5FF),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Text(
-                        'Sending in chunks...',
-                        style: TextStyle(color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-        dialogShown = true;
-      }
-
-      // Safety timeout: close dialog after 30 seconds
-      final timeoutTimer = Timer(const Duration(seconds: 30), () {
-        if (mounted) {
-          try {
-            if (dialogShown) {
-              Navigator.of(context, rootNavigator: true).pop();
-              dialogShown = false;
-            }
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Operation timeout - dialog auto-closed')),
-            );
-          } catch (_) {}
-        }
-      });
-
-      try {
-        // Send the write command
-        await widget.bleManager.sendString(commandString);
-
-        // Wait a moment, then send ?0002!
-        await Future.delayed(const Duration(milliseconds: 500));
-        await widget.bleManager.sendString('?0002!');
-        await Future.delayed(const Duration(milliseconds: 500));
-        await widget.bleManager.sendString('?0005!');
-
-        // Small delay to ensure operations complete
-        await Future.delayed(const Duration(milliseconds: 100));
-
-        // Cancel timeout and close dialog
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          Navigator.of(context, rootNavigator: true).pop();
-          dialogShown = false;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Write successful! Sent ?0002! and ?0005!')),
-          );
-        }
-      } catch (e) {
-        // Cancel timeout and close dialog on error
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          try {
-            Navigator.of(context, rootNavigator: true).pop();
-            dialogShown = false;
-          } catch (_) {
-            // Dialog might already be closed
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Write failed: $e')),
-          );
-        }
-      } finally {
-        // Always cancel timer and close dialog in finally
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          try {
-            Navigator.of(context, rootNavigator: true).pop();
-            dialogShown = false;
-          } catch (_) {}
-        }
-        if (mounted) {
-          setState(() {
-            _isWriting = false;
-          });
-        }
-      }
-    } catch (e) {
-      // Outer catch for any validation errors
-      if (mounted) {
+      if (registerWrites.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          const SnackBar(content: Text('No values to write')),
         );
         setState(() {
           _isWriting = false;
+        });
+        return;
+      }
+
+      // Write registers 5-8 (4mA/20mA channels)
+      if (registerWrites.containsKey(5) || registerWrites.containsKey(6) || 
+          registerWrites.containsKey(7) || registerWrites.containsKey(8)) {
+        final values = [
+          registerWrites[5] ?? _registerData[5] ?? 0,
+          registerWrites[6] ?? _registerData[6] ?? 0,
+          registerWrites[7] ?? _registerData[7] ?? 0,
+          registerWrites[8] ?? _registerData[8] ?? 0,
+        ];
+        await widget.bleManager.writeRegisters(startRegister: 5, values: values);
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+
+      // Write registers 13-15 (levels)
+      if (registerWrites.containsKey(13) || registerWrites.containsKey(14) || 
+          registerWrites.containsKey(15)) {
+        final values = [
+          registerWrites[13] ?? _registerData[13] ?? 0,
+          registerWrites[14] ?? _registerData[14] ?? 0,
+          registerWrites[15] ?? _registerData[15] ?? 0,
+        ];
+        await widget.bleManager.writeRegisters(startRegister: 13, values: values);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Write successful! Data committed.')),
+        );
+        
+        // Write 2 to register 0 to commit
+        await Future.delayed(const Duration(milliseconds: 500));
+        await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Data committed. Press Save to finalize.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Write failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isWriting = false;
+        });
+      }
+    }
+  }
+
+  void _saveCommand() async {
+    if (!widget.bleManager.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Not connected to device')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      // Write 5 to register 0 to finalize/save
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Configuration saved to device!')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
         });
       }
     }
@@ -479,18 +374,18 @@ class _AdminFragmentState extends State<AdminFragment> {
     });
 
     try {
-      // Send ?0004! command
-      await widget.bleManager.sendString('?0004!');
+      // Write 4 to register 0 for factory reset
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [4]);
       
-      // Wait 3 seconds
+      // Wait 1 second
       await Future.delayed(const Duration(seconds: 3));
       
-      // Send ?0005! command
-      await widget.bleManager.sendString('?0005!');
+      // Write 5 to register 0 to finalize
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Factory reset commands sent successfully!')),
+          const SnackBar(content: Text('Factory reset completed successfully!')),
         );
       }
     } catch (e) {
@@ -525,10 +420,11 @@ class _AdminFragmentState extends State<AdminFragment> {
 
     if (_is4mAMode) {
       try {
-        await widget.bleManager.sendString('?0006!');
+        // Write 6 to register 0 for 4mA calibration mode
+        await widget.bleManager.writeRegisters(startRegister: 0, values: [6]);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('4mA mode enabled - Sent ?0006!')),
+            const SnackBar(content: Text('4mA calibration mode enabled')),
           );
         }
       } catch (e) {
@@ -564,10 +460,11 @@ class _AdminFragmentState extends State<AdminFragment> {
 
     if (_is20mAMode) {
       try {
-        await widget.bleManager.sendString('?0007!');
+        // Write 7 to register 0 for 20mA calibration mode
+        await widget.bleManager.writeRegisters(startRegister: 0, values: [7]);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('20mA mode enabled - Sent ?0007!')),
+            const SnackBar(content: Text('20mA calibration mode enabled')),
           );
         }
       } catch (e) {
@@ -595,10 +492,11 @@ class _AdminFragmentState extends State<AdminFragment> {
     }
 
     try {
-      await widget.bleManager.sendString('?0008!');
+      // Write 8 to register 0 for normal mode
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [8]);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Normal mode - Sent ?0008!')),
+          const SnackBar(content: Text('Normal mode enabled')),
         );
       }
     } catch (e) {
@@ -753,7 +651,7 @@ class _AdminFragmentState extends State<AdminFragment> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && _fullArrayHex.isNotEmpty
+              onPressed: widget.bleManager.isConnected && !_isWriting && _registerData.isNotEmpty
                   ? _writeCommand
                   : null,
               icon: _isWriting
@@ -767,7 +665,7 @@ class _AdminFragmentState extends State<AdminFragment> {
                     )
                   : const Icon(Icons.edit, color: Colors.black, size: 20),
               label: Text(
-                _isWriting ? 'Writing...' : 'Write & Send ?0002!',
+                _isWriting ? 'Writing...' : 'Write to Device',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -776,6 +674,43 @@ class _AdminFragmentState extends State<AdminFragment> {
               ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFFF6B35),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 12),
+          
+          // Save button
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.bleManager.isConnected && !_isSaving
+                  ? _saveCommand
+                  : null,
+              icon: _isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black,
+                      ),
+                    )
+                  : const Icon(Icons.save, color: Colors.black, size: 20),
+              label: Text(
+                _isSaving ? 'Saving...' : 'Save Configuration',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4CAF50),
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
