@@ -209,6 +209,9 @@ class _AdminFragmentState extends State<AdminFragment> {
       }
       return;
     }
+
+    // Re-register callback after polling
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
     
     // Read registers 5-15 (11 registers) for all admin fields
     await widget.bleManager.readRegisters(startRegister: 5, quantity: 11);

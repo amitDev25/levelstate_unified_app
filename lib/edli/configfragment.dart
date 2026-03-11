@@ -225,19 +225,19 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     setState(() {
       _isLoading = true;
       _writeCompleted = false;  // Reset write status when reading fresh data
-      // Reset all values
-      _levelChkEna = 'Wait...';
-      _votingChkEna = 'Wait...';
-      _autoAdjustEna = 'Wait...';
-      _contDisable = 'Wait...';
-      _shortDisableSys = 'Wait...';
-      _fltDisable = 'Wait...';
-      _procFltDisable = 'Wait...';
-      _pwrFltDisable = 'Wait...';
+      // Reset all values to defaults (don't use 'Wait...' for dropdowns as it causes assertion error)
+      _levelChkEna = 'No';
+      _votingChkEna = 'No';
+      _autoAdjustEna = 'No';
+      _contDisable = 'No';
+      _shortDisableSys = 'No';
+      _fltDisable = 'No';
+      _procFltDisable = 'No';
+      _pwrFltDisable = 'No';
       _sensitivity = '0.5';
-      _sel420SteamMode = 'Wait...';
+      _sel420SteamMode = 'No';
       _lastRmtAdr = 0;
-      _interlockControlEnable = 'Wait...';
+      _interlockControlEnable = 'No';
       _interlockControlChannel = 0;
       _sysFltTimeDelay = 0;
     });
@@ -245,8 +245,22 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     // Write 1 to register 0 before reading
     await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
     
-    // Wait 3 seconds for device to be ready
-    await Future.delayed(const Duration(seconds: 3));
+    // Poll register 0 until it becomes 0 (device ready)
+    final ready = await _waitForRegister0ToBeZero();
+    if (!ready) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device not ready - timeout')),
+        );
+      }
+      return;
+    }
+    
+    // Re-register callback after polling
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
     
     // Read registers 9-12 (4 registers) for config fields
     await widget.bleManager.readRegisters(startRegister: 9, quantity: 4);
