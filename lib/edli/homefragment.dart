@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'main.dart';
 
 class HomeFragment extends StatefulWidget {
@@ -14,15 +15,17 @@ class _HomeFragmentState extends State<HomeFragment> {
   int _totalChannels = 0;
   List<int> _channelValues = [];
   bool _isLoading = false;
-  int _lastLogCount = 0;
+  Timer? _timeoutTimer;
 
   @override
   void initState() {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
-    _lastLogCount = widget.bleManager.logs.length;
     
-    // Auto-send ?0003! when the fragment is opened
+    // Set up Modbus response callback
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+    
+    // Auto-load data when the fragment is opened
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.bleManager.isConnected) {
         _sendCommand();
@@ -32,82 +35,55 @@ class _HomeFragmentState extends State<HomeFragment> {
 
   @override
   void dispose() {
+    _timeoutTimer?.cancel();
     widget.bleManager.removeListener(_onBLEUpdate);
+    widget.bleManager.onModbusResponse = null;
     super.dispose();
   }
 
   void _onBLEUpdate() {
     if (!mounted) return;
-    
-    // Check if there are new logs
-    if (widget.bleManager.logs.length > _lastLogCount) {
-      final newLogs = widget.bleManager.logs.sublist(_lastLogCount);
-      _lastLogCount = widget.bleManager.logs.length;
-      
-      // Look for JSON-formatted RX responses
-      for (final log in newLogs) {
-        if (log.startsWith('RX: {') && _isLoading) {
-          _parseJsonResponse(log);
-          break;
-        }
-      }
-    }
     setState(() {});
   }
 
-  void _parseJsonResponse(String jsonLog) {
-    if (!_isLoading) return;
+  void _handleModbusResponse() {
+    print('[HomeFragment] _handleModbusResponse called, mounted=$mounted, _isLoading=$_isLoading');
+    if (!mounted || !_isLoading) return;
+    
+    final response = widget.bleManager.lastModbusResponse;
+    print('[HomeFragment] Response length: ${response.length}, FC: ${response.length > 1 ? response[1] : "N/A"}');
+    
+    // Check if this is a read response (FC 3)
+    if (response.length < 2 || response[1] != 0x03) {
+      return;
+    }
+    
+    final values = widget.bleManager.parseReadResponse(response);
+    print('[HomeFragment] Parsed values: $values');
+    if (values.isEmpty) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+    
+    // Cancel timeout timer since we got data
+    _timeoutTimer?.cancel();
     
     setState(() {
-      _channelValues.clear();
-      
-      // Extract FIELD_1 (total channels)
-      final field1Pattern = '"FIELD_1": "';
-      final field1Start = jsonLog.indexOf(field1Pattern);
-      if (field1Start != -1) {
-        final valueStart = field1Start + field1Pattern.length;
-        final valueEnd = jsonLog.indexOf('"', valueStart);
-        if (valueEnd != -1) {
-          try {
-            final hexValue = jsonLog.substring(valueStart, valueEnd);
-            // Remove pipe character if present
-            final cleanHex = hexValue.replaceAll('|', '');
-            _totalChannels = int.parse(cleanHex, radix: 16);
-          } catch (e) {
-            _totalChannels = 0;
-          }
-        }
+      // First value is FIELD_1 (Register 2) = total channels
+      if (values.isNotEmpty) {
+        _totalChannels = values[0];
       }
       
-      // Parse channel values starting from FIELD_4 onwards
-      // Number of channels = _totalChannels
-      for (int i = 4; i <= 3 + _totalChannels; i++) {
-        final fieldName = 'FIELD_$i';
-        final pattern = '"$fieldName": "';
-        
-        final startIndex = jsonLog.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonLog.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            try {
-              final hexValue = jsonLog.substring(valueStart, valueEnd);
-              // Remove any non-hex characters (like pipe)
-              final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-              // Take first 3 digits of hex value
-              final first3Digits = cleanHex.length >= 3 ? cleanHex.substring(0, 3) : cleanHex;
-              // Convert to decimal
-              final decValue = int.parse(first3Digits, radix: 16);
-              _channelValues.add(decValue);
-            } catch (e) {
-              _channelValues.add(0);
-            }
-          } else {
-            _channelValues.add(0);
-          }
-        } else {
-          _channelValues.add(0);
-        }
+      // Remaining values (after skipping 2 reserved regs) are channel data from FIELD_4 (Register 5)
+      _channelValues.clear();
+      // Skip indices 1 and 2 (FIELD_2 and FIELD_3 which are reserved)
+      // Start from index 3 which is Register 5 (FIELD_4)
+      for (int i = 3; i < values.length; i++) {
+        // Take first 3 hex digits (12 bits) for channel value
+        final channelValue = values[i] >> 4; // Use upper 12 bits
+        _channelValues.add(channelValue);
       }
       
       _isLoading = false;
@@ -122,22 +98,35 @@ class _HomeFragmentState extends State<HomeFragment> {
       return;
     }
 
+    // Re-register callback in case another fragment overwrote it
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+
     setState(() {
       _isLoading = true;
       _totalChannels = 0;
       _channelValues.clear();
     });
 
-    await widget.bleManager.sendString('?0003!');
+    // Write 3 to register 0
+    await widget.bleManager.writeRegisters(startRegister: 0, values: [3]);
     
-    Future.delayed(const Duration(seconds: 15), () {
+    // Wait 3 seconds
+    await Future.delayed(const Duration(seconds: 3));
+    
+    // Read all registers in one operation:
+    // Register 2: FIELD_1 (total channels)
+    // Registers 3-4: Reserved/unused (FIELD_2, FIELD_3)
+    // Registers 5+: FIELD_4+ (channel data)
+    // Read 35 registers total (1 channel count + 2 reserved + 32 channel values)
+    await widget.bleManager.readRegisters(startRegister: 2, quantity: 35);
+    
+    // Timeout handler - longer timeout for large register reads
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(const Duration(seconds: 8), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Response timeout')),
-        );
       }
     });
   }
@@ -167,7 +156,7 @@ class _HomeFragmentState extends State<HomeFragment> {
                     )
                   : const Icon(Icons.refresh, color: Colors.black, size: 20),
               label: Text(
-                _isLoading ? 'Sending ?0003!...' : 'Refresh (?0003!)',
+                _isLoading ? 'Loading...' : 'Refresh Home Data',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,

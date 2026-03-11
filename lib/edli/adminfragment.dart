@@ -89,6 +89,13 @@ class _AdminFragmentState extends State<AdminFragment> {
       return;
     }
     
+    // Check byte count - we expect 22 bytes (11 registers * 2 bytes each)
+    // This filters out register 0 poll responses which only have 2 bytes
+    if (response.length < 3 || response[2] != 22) {
+      // Not the main data read, ignore it
+      return;
+    }
+    
     final values = widget.bleManager.parseReadResponse(response);
     
     if (values.isEmpty) {
@@ -130,6 +137,29 @@ class _AdminFragmentState extends State<AdminFragment> {
     }
   }
 
+  // Helper method to poll register 0 until it becomes 0
+  Future<bool> _waitForRegister0ToBeZero({int maxAttempts = 30, int delayMs = 200}) async {
+    for (int i = 0; i < maxAttempts; i++) {
+      await Future.delayed(Duration(milliseconds: delayMs));
+      
+      // Read register 0
+      await widget.bleManager.readRegisters(startRegister: 0, quantity: 1);
+      
+      // Wait a bit for response
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // Check the response
+      final response = widget.bleManager.lastModbusResponse;
+      if (response.length >= 5 && response[1] == 0x03) {
+        final values = widget.bleManager.parseReadResponse(response);
+        if (values.isNotEmpty && values[0] == 0) {
+          return true; // Register 0 is now 0, device is ready
+        }
+      }
+    }
+    return false; // Timeout
+  }
+
   void _sendCommand() async {
     if (!widget.bleManager.isConnected) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -137,6 +167,9 @@ class _AdminFragmentState extends State<AdminFragment> {
       );
       return;
     }
+
+    // Re-register callback in case another fragment overwrote it
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
 
     setState(() {
       _isLoading = true;
@@ -153,7 +186,29 @@ class _AdminFragmentState extends State<AdminFragment> {
 
     // Write 1 to register 0 before reading
     await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
-    await Future.delayed(const Duration(milliseconds: 3000));
+    
+    // Poll register 0 until it becomes 0 (device ready)
+    final ready = await _waitForRegister0ToBeZero();
+    if (!ready) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _values = {
+            '4mA Channel 1 Value': 'Timeout',
+            '20mA Channel 1 Value': 'Timeout',
+            '4mA Channel 2 Value': 'Timeout',
+            '20mA Channel 2 Value': 'Timeout',
+            'Steam Level': 'Timeout',
+            'Water Level': 'Timeout',
+            'Short Level': 'Timeout',
+          };
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device not ready, timeout waiting for register 0')),
+        );
+      }
+      return;
+    }
     
     // Read registers 5-15 (11 registers) for all admin fields
     await widget.bleManager.readRegisters(startRegister: 5, quantity: 11);
@@ -377,8 +432,16 @@ class _AdminFragmentState extends State<AdminFragment> {
       // Write 4 to register 0 for factory reset
       await widget.bleManager.writeRegisters(startRegister: 0, values: [4]);
       
-      // Wait 1 second
-      await Future.delayed(const Duration(seconds: 3));
+      // Poll register 0 until it becomes 0 (reset complete)
+      final ready = await _waitForRegister0ToBeZero();
+      if (!ready) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Timeout waiting for factory reset to complete')),
+          );
+        }
+        return;
+      }
       
       // Write 5 to register 0 to finalize
       await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
@@ -628,7 +691,7 @@ class _AdminFragmentState extends State<AdminFragment> {
                     )
                   : const Icon(Icons.send, color: Colors.black, size: 20),
               label: Text(
-                _isLoading ? 'Sending ?0001!...' : 'Send ?0001!',
+                _isLoading ? 'Loading Admin Data...' : 'Load Admin Data',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,

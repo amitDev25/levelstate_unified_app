@@ -14,18 +14,24 @@ class SettingFragment extends StatefulWidget {
 class _SettingFragmentState extends State<SettingFragment> {
   int _totalChannels = 0;
   List<ChannelSettings> _channels = [];
-  List<String> _fullArrayHex = [];
+  Map<int, int> _registerData = {};  // Store register data
   bool _isLoading = false;
   bool _isWriting = false;
-  int _lastLogCount = 0;
+  bool _isSaving = false;
+  bool _writeCompleted = false;  // Track if write was done
+  Timer? _timeoutTimer;  // Timeout timer for read operations
+  bool _readingChannelSettings = false;  // Track which read stage we're in
+  bool _readingEnergisedDelay = false;
 
   @override
   void initState() {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
-    _lastLogCount = widget.bleManager.logs.length;
     
-    // Auto-send ?0001! when the fragment is opened
+    // Set up Modbus response callback
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+    
+    // Auto-load when the fragment is opened
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.bleManager.isConnected) {
         _sendCommand();
@@ -35,7 +41,9 @@ class _SettingFragmentState extends State<SettingFragment> {
 
   @override
   void dispose() {
+    _timeoutTimer?.cancel();
     widget.bleManager.removeListener(_onBLEUpdate);
+    widget.bleManager.onModbusResponse = null;
     // Dispose all channel controllers
     for (final channel in _channels) {
       channel.dispose();
@@ -45,122 +53,109 @@ class _SettingFragmentState extends State<SettingFragment> {
 
   void _onBLEUpdate() {
     if (!mounted) return;
-    
-    // Check if there are new logs
-    if (widget.bleManager.logs.length > _lastLogCount) {
-      final newLogs = widget.bleManager.logs.sublist(_lastLogCount);
-      _lastLogCount = widget.bleManager.logs.length;
-      
-      // Look for JSON-formatted RX responses
-      for (final log in newLogs) {
-        if (log.startsWith('RX: {') && _isLoading) {
-          _parseJsonResponse(log);
-          break;
-        }
-      }
-    }
     setState(() {});
   }
 
-  void _parseJsonResponse(String jsonLog) {
-    if (!_isLoading) return;
+  void _handleModbusResponse() {
+    if (!mounted || !_isLoading) return;
+    
+    final response = widget.bleManager.lastModbusResponse;
+    
+    // Check if this is a read response (FC 3)
+    if (response.length < 2 || response[1] != 0x03) {
+      return;
+    }
+    
+    final values = widget.bleManager.parseReadResponse(response);
+    if (values.isEmpty) {
+      _timeoutTimer?.cancel();
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
     
     setState(() {
-      _channels.clear();
-      _fullArrayHex.clear();
+      // Store all received register values
+      final byteCount = response[2];
       
-      // First, extract all hex values to store the complete array
-      for (int i = 1; i <= 96; i++) {
-        final fieldName = 'FIELD_$i';
-        final pattern = '"$fieldName": "';
+      // First read: Register 12 (FIELD_11) - 1 register = 2 bytes
+      if (byteCount == 2 && values.length == 1 && !_readingChannelSettings && !_readingEnergisedDelay) {
+        _timeoutTimer?.cancel();  // Cancel timeout for this read
+        _registerData[12] = values[0];
+        _totalChannels = values[0] & 0xFF;  // Lower byte
         
-        final startIndex = jsonLog.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonLog.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            final hexValue = jsonLog.substring(valueStart, valueEnd);
-            // Remove pipe and other non-hex characters
-            final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-            _fullArrayHex.add(cleanHex.isNotEmpty ? cleanHex : '0000');
-          } else {
-            _fullArrayHex.add('0000');
-          }
-        } else {
-          _fullArrayHex.add('0000');
-        }
+        // Now read channel settings based on _totalChannels
+        _readChannelSettingsRegisters();
+        return;  // Wait for next read
       }
       
-      // Get total channels from FIELD_11 last 2 hex digits
-      final field11Hex = _extractFieldHex(jsonLog, 'FIELD_11');
-      if (field11Hex != null && field11Hex.length >= 4) {
-        _totalChannels = int.parse(field11Hex.substring(2, 4), radix: 16);
+      // Second read: Channel settings registers (16 to 16+_totalChannels-1)
+      if (_readingChannelSettings && byteCount == _totalChannels * 2) {
+        _timeoutTimer?.cancel();  // Cancel timeout for this read
+        for (int i = 0; i < values.length && i < _totalChannels; i++) {
+          _registerData[16 + i] = values[i];
+        }
+        _readingChannelSettings = false;
+        
+        // Now read energised/delay registers
+        _readEnergisedDelayRegisters();
+        return;  // Wait for next read
       }
       
-      // Now parse each channel's settings
-      for (int i = 1; i <= _totalChannels; i++) {
-        final channelSettings = ChannelSettings(channelNumber: i);
-        
-        // Get settings from FIELD_(14+i) for enable, steam, trip relay
-        final settingsFieldNum = 14 + i;
-        final settingsHex = _extractFieldHex(jsonLog, 'FIELD_$settingsFieldNum');
-        if (settingsHex != null && settingsHex.length >= 4) {
-          // Parse as hex digits: e.g., "0105" -> '0', '1', '0', '5'
-          // 1st hex digit: enable/disable (0 = enabled, 1 = disabled)
-          final enabledVal = int.parse(settingsHex[0], radix: 16);
-          channelSettings.enabled = enabledVal == 0;
-          channelSettings.enabledCtrl.text = enabledVal.toString();
-          
-          // 2nd hex digit: steam/water
-          final steamVal = int.parse(settingsHex[1], radix: 16);
-          channelSettings.isSteam = steamVal == 1;
-          channelSettings.steamCtrl.text = steamVal.toString();
-          
-          // Last 2 hex digits: trip relay number
-          channelSettings.tripRelayNumber = int.parse(settingsHex.substring(2, 4), radix: 16);
-          channelSettings.tripRelayCtrl.text = channelSettings.tripRelayNumber.toString();
+      // Third read: Energised/delay registers (65 to 65+_totalChannels-1)
+      if (_readingEnergisedDelay && byteCount == _totalChannels * 2 && _registerData.containsKey(16)) {
+        _timeoutTimer?.cancel();  // Cancel timeout for this read
+        for (int i = 0; i < values.length && i < _totalChannels; i++) {
+          _registerData[65 + i] = values[i];
         }
+        _readingEnergisedDelay = false;
         
-        // Get energised and delay from FIELD_(63+i)
-        final energisedFieldNum = 63 + i;
-        final energisedHex = _extractFieldHex(jsonLog, 'FIELD_$energisedFieldNum');
-        if (energisedHex != null && energisedHex.length >= 4) {
-          // Parse as hex digits
-          // 1st hex digit: energised/deenergised
-          final energisedVal = int.parse(energisedHex[0], radix: 16);
-          channelSettings.energised = energisedVal == 1;
-          channelSettings.energisedCtrl.text = energisedVal.toString();
-          
-          // Last 3 hex digits: delay value
-          channelSettings.delayValue = int.parse(energisedHex.substring(1, 4), radix: 16);
-          channelSettings.delayCtrl.text = channelSettings.delayValue.toString();
-        }
-        
-        _channels.add(channelSettings);
+        // Now parse all channel data
+        _parseChannelData();
+        _isLoading = false;
       }
-      
-      _isLoading = false;
     });
   }
-
-  String? _extractFieldHex(String jsonLog, String fieldName) {
-    final pattern = '"$fieldName": "';
-    final startIndex = jsonLog.indexOf(pattern);
-    if (startIndex != -1) {
-      final valueStart = startIndex + pattern.length;
-      final valueEnd = jsonLog.indexOf('"', valueStart);
-      if (valueEnd != -1) {
-        try {
-          final hexValue = jsonLog.substring(valueStart, valueEnd);
-          // Remove pipe and other non-hex characters
-          final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-          return cleanHex;
-        } catch (e) {
-          return null;
-        }
+  
+  void _parseChannelData() {
+    _channels.clear();
+    
+    for (int i = 1; i <= _totalChannels && i <= 32; i++) {
+      final channelSettings = ChannelSettings(channelNumber: i);
+      
+      // Parse FIELD_(14+i) from Register (15+i)
+      final settingsReg = 14 + i + 1;  // field+1
+      if (_registerData.containsKey(settingsReg)) {
+        final regVal = _registerData[settingsReg]!;
+        // Bit-packed: [enable][steam][tripRelay(2 bytes)]
+        final enableVal = (regVal >> 12) & 0xF;
+        channelSettings.enabled = enableVal == 0;
+        channelSettings.enabledCtrl.text = enableVal.toString();
+        
+        final steamVal = (regVal >> 8) & 0xF;
+        channelSettings.isSteam = steamVal == 1;
+        channelSettings.steamCtrl.text = steamVal.toString();
+        
+        channelSettings.tripRelayNumber = regVal & 0xFF;
+        channelSettings.tripRelayCtrl.text = channelSettings.tripRelayNumber.toString();
       }
+      
+      // Parse FIELD_(63+i) from Register (64+i)
+      final energisedReg = 63 + i + 1;  // field+1
+      if (_registerData.containsKey(energisedReg)) {
+        final regVal = _registerData[energisedReg]!;
+        // Bit-packed: [energised(1 nibble)][delay(3 nibbles)]
+        final energisedVal = (regVal >> 12) & 0xF;
+        channelSettings.energised = energisedVal == 1;
+        channelSettings.energisedCtrl.text = energisedVal.toString();
+        
+        channelSettings.delayValue = regVal & 0xFFF;
+        channelSettings.delayCtrl.text = channelSettings.delayValue.toString();
+      }
+      
+      _channels.add(channelSettings);
     }
-    return null;
   }
 
   void _sendCommand() async {
@@ -171,22 +166,75 @@ class _SettingFragmentState extends State<SettingFragment> {
       return;
     }
 
+    // Re-register callback in case another fragment overwrote it
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+
     setState(() {
       _isLoading = true;
+      _writeCompleted = false;
       _totalChannels = 0;
       _channels.clear();
+      _registerData.clear();
+      _readingChannelSettings = false;
+      _readingEnergisedDelay = false;
     });
+
+    // Cancel any existing timeout timer
+    _timeoutTimer?.cancel();
 
     // Write 1 to register 0 before reading
     await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
-    await Future.delayed(const Duration(milliseconds: 200));
     
-    await widget.bleManager.sendString('?0001!');
+    // Wait 3 seconds for device to be ready
+    await Future.delayed(const Duration(seconds: 3));
     
-    Future.delayed(const Duration(seconds: 15), () {
+    // Read Register 12 (FIELD_11) to get total channels
+    await widget.bleManager.readRegisters(startRegister: 12, quantity: 1);
+    
+    // Start timeout timer for register 12 read
+    _startTimeoutTimer();
+  }
+  
+  void _readChannelSettingsRegisters() async {
+    if (_totalChannels <= 0 || _totalChannels > 32) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Invalid channel count: $_totalChannels')),
+      );
+      return;
+    }
+    
+    await Future.delayed(const Duration(milliseconds: 500));
+    _readingChannelSettings = true;
+    
+    // Read only the required number of channel setting registers
+    await widget.bleManager.readRegisters(startRegister: 16, quantity: _totalChannels);
+    
+    // Start timeout timer
+    _startTimeoutTimer();
+  }
+  
+  void _readEnergisedDelayRegisters() async {
+    await Future.delayed(const Duration(milliseconds: 500));
+    _readingEnergisedDelay = true;
+    
+    // Read only the required number of energised/delay registers
+    await widget.bleManager.readRegisters(startRegister: 65, quantity: _totalChannels);
+    
+    // Start timeout timer
+    _startTimeoutTimer();
+  }
+  
+  void _startTimeoutTimer() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(const Duration(seconds: 8), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
+          _readingChannelSettings = false;
+          _readingEnergisedDelay = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Response timeout')),
@@ -203,7 +251,7 @@ class _SettingFragmentState extends State<SettingFragment> {
       return;
     }
 
-    if (_fullArrayHex.isEmpty || _fullArrayHex.length != 96) {
+    if (_registerData.isEmpty || _channels.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No data to write. Please read first.')),
       );
@@ -215,25 +263,21 @@ class _SettingFragmentState extends State<SettingFragment> {
     });
 
     try {
-      // Create a copy of the full array
-      final modifiedArray = List<String>.from(_fullArrayHex);
+      // Prepare register writes for each channel
+      final channelSettingsWrites = <int, int>{};
+      final energisedDelayWrites = <int, int>{};
 
-      // Update each channel's fields
-      for (int i = 0; i < _channels.length; i++) {
-        final channel = _channels[i];
+      for (final channel in _channels) {
         final channelNum = channel.channelNumber;
-
-        // Reconstruct FIELD_(14+channelNum) from channel settings
+        
+        // Build channel settings register (FIELD_(14+channelNum) → Register (15+channelNum))
         try {
           final enableVal = int.parse(channel.enabledCtrl.text.trim());
           final steamVal = int.parse(channel.steamCtrl.text.trim());
           final tripRelay = int.parse(channel.tripRelayCtrl.text.trim());
           
-          final f_0 = enableVal.toRadixString(16).toUpperCase().padLeft(1, '0');
-          final f_1 = steamVal.toRadixString(16).toUpperCase().padLeft(1, '0');
-          final f_2_3 = tripRelay.toRadixString(16).toUpperCase().padLeft(2, '0');
-          
-          modifiedArray[14 + channelNum - 1] = '$f_0$f_1$f_2_3';
+          final settingsReg = 14 + channelNum + 1;  // field+1
+          channelSettingsWrites[settingsReg] = (enableVal << 12) | (steamVal << 8) | tripRelay;
         } catch (e) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Invalid value in Channel $channelNum settings')),
@@ -242,15 +286,13 @@ class _SettingFragmentState extends State<SettingFragment> {
           return;
         }
 
-        // Reconstruct FIELD_(63+channelNum) from energised and delay
+        // Build energised/delay register (FIELD_(63+channelNum) → Register (64+channelNum))
         try {
           final energisedVal = int.parse(channel.energisedCtrl.text.trim());
           final delayVal = int.parse(channel.delayCtrl.text.trim());
           
-          final e_0 = energisedVal.toRadixString(16).toUpperCase().padLeft(1, '0');
-          final e_1_3 = delayVal.toRadixString(16).toUpperCase().padLeft(3, '0');
-          
-          modifiedArray[63 + channelNum - 1] = '$e_0$e_1_3';
+          final energisedReg = 63 + channelNum + 1;  // field+1
+          energisedDelayWrites[energisedReg] = (energisedVal << 12) | (delayVal & 0xFFF);
         } catch (e) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Invalid value in Channel $channelNum energised/delay')),
@@ -260,151 +302,112 @@ class _SettingFragmentState extends State<SettingFragment> {
         }
       }
 
-      // Reconstruct the command string with "|" prefix and "!" suffix
-      final commandString = '|${modifiedArray.join(',')}!';
-
-      // Show dialog with command being sent
-      bool dialogShown = false;
-      if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A2E),
-            title: const Text(
-              'Sending Command',
-              style: TextStyle(color: Color(0xFF00E5FF)),
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Command String:',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0D0D1A),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: const Color(0xFF00E5FF).withOpacity(0.3),
-                      ),
-                    ),
-                    child: Text(
-                      commandString,
-                      style: const TextStyle(
-                        color: Color(0xFF00E5FF),
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Row(
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Color(0xFF00E5FF),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Text(
-                        'Sending in chunks...',
-                        style: TextStyle(color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-        dialogShown = true;
+      // Write only the required number of channel settings registers
+      final settingsValues = List<int>.filled(_totalChannels, 0);
+      for (int i = 0; i < _totalChannels; i++) {
+        settingsValues[i] = channelSettingsWrites[16 + i] ?? _registerData[16 + i] ?? 0;
+      }
+      
+      // Write in chunks of 4 registers to stay under BLE 20-byte limit
+      const chunkSize = 4;
+      for (int i = 0; i < settingsValues.length; i += chunkSize) {
+        final end = (i + chunkSize < settingsValues.length) ? i + chunkSize : settingsValues.length;
+        final chunk = settingsValues.sublist(i, end);
+        await widget.bleManager.writeRegisters(startRegister: 16 + i, values: chunk);
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+      
+      // Write only the required number of energised/delay registers
+      final energisedValues = List<int>.filled(_totalChannels, 0);
+      for (int i = 0; i < _totalChannels; i++) {
+        energisedValues[i] = energisedDelayWrites[65 + i] ?? _registerData[65 + i] ?? 0;
+      }
+      
+      // Write in chunks of 4 registers to stay under BLE 20-byte limit
+      for (int i = 0; i < energisedValues.length; i += chunkSize) {
+        final end = (i + chunkSize < energisedValues.length) ? i + chunkSize : energisedValues.length;
+        final chunk = energisedValues.sublist(i, end);
+        await widget.bleManager.writeRegisters(startRegister: 65 + i, values: chunk);
+        await Future.delayed(const Duration(milliseconds: 300));
       }
 
-      // Safety timeout: close dialog after 30 seconds
-      final timeoutTimer = Timer(const Duration(seconds: 30), () {
-        if (mounted) {
-          try {
-            if (dialogShown) {
-              Navigator.of(context, rootNavigator: true).pop();
-              dialogShown = false;
-            }
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Operation timeout - dialog auto-closed')),
-            );
-          } catch (_) {}
-        }
-      });
-
-      try {
-        // Send the write command
-        await widget.bleManager.sendString(commandString);
-
+      if (mounted) {
         // Write 2 to register 0 to commit
-        await Future.delayed(const Duration(seconds: 1));
         await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
-        
-        // Wait 1 second, then write 5 to register 0 to finalize
-        await Future.delayed(const Duration(seconds: 1));
-        await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+        await Future.delayed(const Duration(milliseconds: 500));
 
-        // Cancel timeout and close dialog
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          Navigator.of(context, rootNavigator: true).pop();
-          dialogShown = false;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Write successful! Configuration saved.')),
-          );
-        }
-      } catch (e) {
-        // Cancel timeout and close dialog on error
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          try {
-            Navigator.of(context, rootNavigator: true).pop();
-            dialogShown = false;
-          } catch (_) {
-            // Dialog might already be closed
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Write failed: $e')),
-          );
-        }
-      } finally {
-        // Always cancel timer and close dialog in finally
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          try {
-            Navigator.of(context, rootNavigator: true).pop();
-            dialogShown = false;
-          } catch (_) {}
-        }
         if (mounted) {
           setState(() {
-            _isWriting = false;
+            _writeCompleted = true;
           });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Write successful! Now press SAVE to finalize.'),
+              backgroundColor: Colors.green,
+            ),
+          );
         }
       }
     } catch (e) {
-      // Outer catch for any validation errors
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(content: Text('Write failed: $e')),
         );
+      }
+    } finally {
+      if (mounted) {
         setState(() {
           _isWriting = false;
+        });
+      }
+    }
+  }
+
+  void _saveCommand() async {
+    if (!widget.bleManager.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Not connected to device')),
+      );
+      return;
+    }
+
+    if (!_writeCompleted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please write configuration first')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      // Write 5 to register 0 to finalize/save
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      if (mounted) {
+        setState(() {
+          _writeCompleted = false;  // Reset after save
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Configuration saved successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
         });
       }
     }
@@ -454,11 +457,11 @@ class _SettingFragmentState extends State<SettingFragment> {
           
           const SizedBox(height: 12),
           
-          // Write button
+          // Write button (writes data + reg 0 = 2)
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && _fullArrayHex.isNotEmpty
+              onPressed: widget.bleManager.isConnected && !_isWriting && _channels.isNotEmpty
                   ? _writeCommand
                   : null,
               icon: _isWriting
@@ -472,7 +475,7 @@ class _SettingFragmentState extends State<SettingFragment> {
                     )
                   : const Icon(Icons.edit, color: Colors.black, size: 20),
               label: Text(
-                _isWriting ? 'Writing...' : 'Write & Send ?0002!',
+                _isWriting ? 'Writing...' : 'Write to Device',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -481,6 +484,45 @@ class _SettingFragmentState extends State<SettingFragment> {
               ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFFF6B35),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 12),
+          
+          // Save button (writes reg 0 = 5, enabled after write)
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.bleManager.isConnected && !_isSaving && _writeCompleted
+                  ? _saveCommand
+                  : null,
+              icon: _isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black,
+                      ),
+                    )
+                  : const Icon(Icons.save, color: Colors.black, size: 20),
+              label: Text(
+                _isSaving ? 'Saving...' : 'Save Configuration',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _writeCompleted 
+                    ? Colors.green 
+                    : Colors.grey,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),

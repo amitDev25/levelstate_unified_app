@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../device_preferences.dart';
 import 'adminfragment.dart';
 import 'homefragment.dart';
@@ -175,6 +178,13 @@ class BLEManager extends ChangeNotifier {
   Uint8List lastModbusResponse = Uint8List(0);
   VoidCallback? onModbusResponse;
   final int defaultSlaveID = 247;
+  
+  // ── Activation state ─────────────────────────────────────────────────────
+  bool needsActivation = false;
+  bool isActivating = false;
+  bool isAppDisabled = false; // Flag to disable entire app if API returns -1
+  String deviceHexData = '';
+  List<String> hmacSwappedData = [];
   List<int> _rxBuffer_modbus = [];
   Timer? _modbusFrameTimer;
 
@@ -444,6 +454,347 @@ class BLEManager extends ChangeNotifier {
     return values;
   }
 
+  /// Helper method to poll register 0 until it becomes 0
+  Future<bool> _waitForRegister0ToBeZero({int maxAttempts = 30, int delayMs = 200}) async {
+    for (int i = 0; i < maxAttempts; i++) {
+      await Future.delayed(Duration(milliseconds: delayMs));
+      
+      // Read register 0
+      await readRegisters(startRegister: 0, quantity: 1);
+      
+      // Wait a bit for response
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // Check the response
+      if (lastModbusResponse.length >= 5 && lastModbusResponse[1] == 0x03) {
+        final values = parseReadResponse(lastModbusResponse);
+        if (values.isNotEmpty && values[0] == 0) {
+          logs.add('✓ Register 0 = 0 (device ready)');
+          notifyListeners();
+          return true; // Register 0 is now 0, device is ready
+        } else if (values.isNotEmpty) {
+          logs.add('⌛ Poll #${i + 1}: Reg 0 = ${values[0]} (waiting...)');
+          notifyListeners();
+        }
+      }
+    }
+    logs.add('❌ Timeout: Register 0 did not become 0');
+    notifyListeners();
+    return false; // Timeout
+  }
+
+  /// PUBLIC: Run device initialization sequence
+  Future<void> runInitializationSequence() async {
+    if (!isConnected) {
+      logs.add('❌ ERROR: Device not connected');
+      notifyListeners();
+      return;
+    }
+
+    try {
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      logs.add('🚀 Starting initialization sequence');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      notifyListeners();
+      
+      // Step 1: Write 5 to register 0
+      logs.add('📝 Step 1: Writing 5 to reg 0...');
+      notifyListeners();
+      await writeRegisters(startRegister: 0, values: [5]);
+      logs.add('✓ Wrote 5 to reg 0');
+      notifyListeners();
+      
+      // Step 2: Wait 3 seconds
+      logs.add('⏳ Step 2: Waiting 3 seconds...');
+      notifyListeners();
+      await Future.delayed(const Duration(seconds: 3));
+      logs.add('✓ Wait complete');
+      notifyListeners();
+      
+      // Step 3: Write 1 to register 0
+      logs.add('📝 Step 3: Writing 1 to reg 0...');
+      notifyListeners();
+      await writeRegisters(startRegister: 0, values: [1]);
+      logs.add('✓ Wrote 1 to reg 0');
+      notifyListeners();
+      
+      // Step 4: Wait 3 seconds
+      logs.add('⏳ Step 4: Waiting 3 seconds...');
+      notifyListeners();
+      await Future.delayed(const Duration(seconds: 3));
+      logs.add('✓ Wait complete');
+      notifyListeners();
+      
+      // Step 5: Read device ID (registers 89-95, quantity 7)
+      logs.add('📖 Step 5: Reading device ID (regs 89-95)...');
+      notifyListeners();
+      await readRegisters(startRegister: 89, quantity: 7);
+      
+      // Wait for response and parse values
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (lastModbusResponse.length >= 5 && lastModbusResponse[1] == 0x03) {
+        final values = parseReadResponse(lastModbusResponse);
+        if (values.isNotEmpty && values.length >= 7) {
+          logs.add('✓ Device ID raw values:');
+          for (int i = 0; i < values.length; i++) {
+            logs.add('  Reg ${89 + i} = ${values[i]} (0x${values[i].toRadixString(16).padLeft(4, '0').toUpperCase()})');
+          }
+          notifyListeners();
+          
+          // Check the last register (register 95, index 6)
+          final reg95Value = values[6];
+          logs.add('');
+          logs.add('🔍 Checking activation status (Reg 95)...');
+          logs.add('  Reg 95 = 0x${reg95Value.toRadixString(16).padLeft(4, '0').toUpperCase()}');
+          notifyListeners();
+          
+          if (reg95Value != 0) {
+            // Device is already activated
+            logs.add('');
+            logs.add('✅ Device is already activated!');
+            logs.add('   (Register 95 is not 0000)');
+            logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            logs.add('✅ Initialization complete');
+            logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            needsActivation = false;
+            notifyListeners();
+            return;
+          }
+          
+          // Device needs activation (reg 95 is 0000)
+          logs.add('');
+          logs.add('⚠️  Register 95 is 0000 - Device needs activation');
+          notifyListeners();
+          
+          // Step 6: Swap bytes for first 6 registers (89-94)
+          logs.add('');
+          logs.add('🔄 Step 6: Swapping bytes for device ID...');
+          notifyListeners();
+          
+          final swappedParts = <String>[];
+          for (int i = 0; i < 6; i++) { // Only first 6 registers for device ID
+            final original = values[i].toRadixString(16).padLeft(4, '0').toUpperCase();
+            final swapped = original.substring(2, 4) + original.substring(0, 2);
+            logs.add('  Reg ${89 + i}: $original → $swapped');
+            swappedParts.add(swapped);
+          }
+          
+          deviceHexData = swappedParts.join('');
+          logs.add('✓ Device hex string: $deviceHexData');
+          notifyListeners();
+          
+          // Set flag to show activate button
+          needsActivation = true;
+          logs.add('');
+          logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          logs.add('⏸️  Paused - Click ACTIVATE button to continue');
+          logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          notifyListeners();
+          
+        } else {
+          logs.add('❌ Failed to parse register values or insufficient data');
+          notifyListeners();
+        }
+      } else {
+        logs.add('❌ No valid response for device ID');
+        notifyListeners();
+      }
+      
+    } catch (e) {
+      logs.add('❌ Init error: $e');
+      notifyListeners();
+    }
+  }
+
+  /// PUBLIC: Complete device activation (called when Activate button is clicked)
+  Future<void> completeActivation() async {
+    if (!isConnected || !needsActivation || deviceHexData.isEmpty) {
+      logs.add('❌ ERROR: Cannot complete activation');
+      notifyListeners();
+      return;
+    }
+
+    try {
+      isActivating = true;
+      needsActivation = false;
+      notifyListeners();
+      
+      logs.add('');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      logs.add('🔐 Starting activation process...');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      notifyListeners();
+      
+      // Step 7: Get device location
+      logs.add('📍 Step 7: Getting device location...');
+      notifyListeners();
+      final location = await _getDeviceLocation();
+      logs.add('✓ Location: $location');
+      notifyListeners();
+      
+      // Step 8: Post to HMAC API
+      logs.add('');
+      logs.add('🌐 Step 8: Posting to HMAC API...');
+      logs.add('  Device hex: $deviceHexData');
+      notifyListeners();
+      
+      final response = await http.post(
+        Uri.parse('https://levelstate-server-flask.onrender.com/hmac'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'hex': deviceHexData,
+          'location': 'https://www.google.com/maps/search/?api=1&query=$location',
+        }),
+      ).timeout(const Duration(seconds: 20));
+      
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+      
+      logs.add('✓ API response received');
+      notifyListeners();
+      
+      // Step 9: Parse and swap HMAC response
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      final hmacHash = (json['hmac_sha256'] as String).trim();
+      
+      // Check if API returned -1 (device blocked/unauthorized)
+      if (hmacHash == '-1') {
+        logs.add('');
+        logs.add('❌ CRITICAL: Device authorization failed!');
+        logs.add('   API returned -1 - Device is blocked');
+        logs.add('   App will be disabled.');
+        logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        isAppDisabled = true;
+        isActivating = false;
+        needsActivation = false;
+        notifyListeners();
+        return;
+      }
+      
+      logs.add('✓ HMAC received: $hmacHash');
+      notifyListeners();
+      
+      logs.add('');
+      logs.add('🔄 Step 9: Swapping HMAC response bytes...');
+      notifyListeners();
+      
+      // Swap the HMAC response in same way
+      hmacSwappedData.clear();
+      for (int i = 0; i < hmacHash.length; i += 4) {
+        if (i + 4 <= hmacHash.length) {
+          final chunk = hmacHash.substring(i, i + 4);
+          final swapped = chunk.substring(2, 4) + chunk.substring(0, 2);
+          hmacSwappedData.add(swapped);
+          logs.add('  Chunk ${i ~/ 4 + 1}: $chunk → $swapped');
+        }
+      }
+      
+      final hmacSwapped = hmacSwappedData.join('');
+      logs.add('✓ Swapped HMAC: $hmacSwapped');
+      notifyListeners();
+      
+      // Step 10: Write HMAC to registers starting from 95
+      logs.add('');
+      logs.add('📝 Step 10: Writing HMAC to registers (starting at 95)...');
+      notifyListeners();
+      
+      int regOffset = 95;
+      for (int i = 0; i < hmacSwappedData.length; i++) {
+        final chunk = hmacSwappedData[i];
+        final chunkValue = int.parse(chunk, radix: 16);
+        
+        await writeRegisters(startRegister: regOffset, values: [chunkValue]);
+        logs.add('  Wrote $chunk (${chunkValue}) → Reg $regOffset');
+        notifyListeners();
+        
+        // Small delay between writes
+        await Future.delayed(const Duration(milliseconds: 100));
+        regOffset++;
+      }
+      
+      logs.add('✓ All HMAC chunks written to registers 95-${regOffset - 1}');
+      notifyListeners();
+      
+      // Step 11: Write 2 to register 0 (commit)
+      logs.add('');
+      logs.add('📝 Step 11: Writing 2 to reg 0 (commit)...');
+      notifyListeners();
+      await writeRegisters(startRegister: 0, values: [2]);
+      logs.add('✓ Wrote 2 to reg 0');
+      notifyListeners();
+      
+      // Step 12: Wait 3 seconds
+      logs.add('⏳ Step 12: Waiting 3 seconds...');
+      notifyListeners();
+      await Future.delayed(const Duration(seconds: 3));
+      logs.add('✓ Wait complete');
+      notifyListeners();
+      
+      // Step 13: Write 5 to register 0 (finalize)
+      logs.add('📝 Step 13: Writing 5 to reg 0 (finalize)...');
+      notifyListeners();
+      await writeRegisters(startRegister: 0, values: [5]);
+      logs.add('✓ Wrote 5 to reg 0');
+      notifyListeners();
+      
+      logs.add('');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      logs.add('✅ Activation complete!');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      isActivating = false;
+      notifyListeners();
+      
+    } catch (e) {
+      logs.add('❌ Activation error: $e');
+      isActivating = false;
+      needsActivation = true; // Allow retry
+      notifyListeners();
+    }
+  }
+
+  /// Get device location with permission
+  Future<String> _getDeviceLocation() async {
+    try {
+      // Check and request location permission
+      var permission = await Permission.location.status;
+      if (!permission.isGranted) {
+        logs.add('  → Requesting location permission...');
+        notifyListeners();
+        permission = await Permission.location.request();
+        if (!permission.isGranted) {
+          logs.add('  ⚠ Location permission denied');
+          notifyListeners();
+          return 'Unknown';
+        }
+      }
+      
+      // Check if location service is enabled
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        logs.add('  ⚠ Location services are disabled');
+        notifyListeners();
+        return 'Unknown';
+      }
+      
+      // Get current position
+      logs.add('  → Acquiring GPS coordinates...');
+      notifyListeners();
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 5),
+      );
+      
+      final location = '${position.latitude.toStringAsFixed(6)},${position.longitude.toStringAsFixed(6)}';
+      return location;
+      
+    } catch (e) {
+      logs.add('  ⚠ Location error: $e');
+      notifyListeners();
+      return 'Unknown';
+    }
+  }
+
   // ── PRIVATE: scan and connect ─────────────────────────────
   Future<void> _startScan() async {
     await FlutterBluePlus.stopScan();
@@ -499,7 +850,7 @@ class BLEManager extends ChangeNotifier {
       status = 'Connected';
       logs.add('Connected successfully');
       notifyListeners();
-      
+
       await _discoverServices(device);
     } catch (e) {
       status = 'Connection Failed';
@@ -545,16 +896,9 @@ class BLEManager extends ChangeNotifier {
 
     if (_writeChar != null) {
       logs.add('Characteristics configured');
+      logs.add('→ Go to Custom Command tab and press');
+      logs.add('  "Start Initialization Sequence" button');
       notifyListeners();
-      
-      // Initialize device by writing 5 to register 0
-      await Future.delayed(const Duration(milliseconds: 500));
-      try {
-        await writeRegisters(startRegister: 0, values: [5]);
-        logs.add('Device initialized (wrote 5 to reg 0)');
-      } catch (e) {
-        logs.add('Failed to initialize device: $e');
-      }
     } else {
       status = 'No writable characteristic found';
       logs.add('ERROR: No writable characteristic found');
@@ -665,7 +1009,9 @@ class BLEManager extends ChangeNotifier {
     logs.add('RX Complete Frame: ${_toHexString(frame)}');
     
     // Notify listener if registered
+    print('[BLEManager] Modbus callback registered: ${onModbusResponse != null}');
     if (onModbusResponse != null) {
+      print('[BLEManager] Calling onModbusResponse callback');
       onModbusResponse!();
     }
     
@@ -975,11 +1321,13 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
   Widget build(BuildContext context) {
     return SafeArea(
       child: Scaffold(
-        body: Column(
+        body: Stack(
           children: [
-            // Header with connection controls
-            Container(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            Column(
+              children: [
+                // Header with connection controls
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             decoration: BoxDecoration(
               color: const Color(0xFF12121F),
               border: Border(
@@ -1144,6 +1492,57 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
           ),
           ],
         ),
+        
+        // Blocking overlay when app is disabled
+        if (_ble.isAppDisabled)
+          Container(
+            color: Colors.black.withOpacity(0.95),
+            child: Center(
+              child: Container(
+                margin: const EdgeInsets.all(32),
+                padding: const EdgeInsets.all(32),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A2E),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.redAccent, width: 2),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.block,
+                      size: 80,
+                      color: Colors.redAccent,
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Device Unauthorized',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.redAccent,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'This device has been blocked by the server.\n'
+                      'Authorization failed (API returned -1).\n\n'
+                      'Please contact support for assistance.',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                        height: 1.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
       ),
     );
   }
@@ -1293,6 +1692,60 @@ class _CustomCommandTabState extends State<CustomCommandTab> {
                       color: Colors.greenAccent,
                       fontFamily: 'monospace', fontSize: 12)),
             ),
+
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.ble.isConnected 
+                  ? () => widget.ble.runInitializationSequence()
+                  : null,
+              icon:  const Icon(Icons.play_arrow_rounded, size: 20),
+              label: const Text('Start Initialization Sequence'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4CAF50),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Activate button - shown when device needs activation
+          if (widget.ble.needsActivation)
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: widget.ble.isConnected && !widget.ble.isActivating
+                    ? () => widget.ble.completeActivation()
+                    : null,
+                icon: widget.ble.isActivating
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.black,
+                        ),
+                      )
+                    : const Icon(Icons.bolt_rounded, size: 20),
+                label: Text(widget.ble.isActivating 
+                    ? 'Activating...' 
+                    : 'ACTIVATE Device'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ),
+
+          if (widget.ble.needsActivation)
+            const SizedBox(height: 10),
 
           SizedBox(
             width: double.infinity,

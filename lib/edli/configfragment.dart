@@ -12,53 +12,54 @@ class ConfigFragment extends StatefulWidget {
 }
 
 class _ConfigFragmentState extends State<ConfigFragment> {
-  // FIELD_8 bits - Dropdown fields (1=Yes, 0=No)
+  // FIELD_8 (Register 9) - Dropdown fields (1=Yes, 0=No)
   String _levelChkEna = 'No';
   String _votingChkEna = 'No';
   String _autoAdjustEna = 'No';
-  int _unused = 0;
   
-  // FIELD_9 bits - Disable flags (1=Yes/Disabled, 0=No/Enabled)
+  // FIELD_9 (Register 10) - Disable flags (1=Yes/Disabled, 0=No/Enabled)
   String _contDisable = 'No';  // No means enabled (not disabled)
   String _shortDisableSys = 'No';  // No means enabled (not disabled)
   String _fltDisable = 'No';  // No means enabled (not disabled)
   String _procFltDisable = 'No';  // No means enabled (not disabled)
   
-  // FIELD_10 bits
+  // FIELD_10 (Register 11)
   String _pwrFltDisable = 'No';  // No means enabled (not disabled)
   String _sensitivity = '0.5';  // Dropdown: 0.5, 1, 2 (writes 1, 2, 3 respectively)
   String _sel420SteamMode = 'No';
   int _lastRmtAdr = 0;
   
-  // FIELD_11 bits
-  int _numGroundConnections = 0;
-  int _totalChannels = 0;
+  // FIELD_11 (Register 12) - Interlock Control
+  String _interlockControlEnable = 'No';
+  int _interlockControlChannel = 0;
   
-  // FIELD_63 - System Fault Time Delay (last 3 digits as decimal)
+  // FIELD_63 (Register 64) - System Fault Time Delay
   int _sysFltTimeDelay = 0;
   
   // Text controllers for numeric fields only
   final Map<String, TextEditingController> _controllers = {
     'lastRmtAdr': TextEditingController(text: '0'),
-    'numGroundConnections': TextEditingController(text: '0'),
-    'totalChannels': TextEditingController(text: '0'),
+    'interlockControlChannel': TextEditingController(text: '0'),
     'sysFltTimeDelay': TextEditingController(text: '0'),
   };
   
-  // Store full hex array for write operations
-  List<String> _fullArrayHex = [];
+  // Store register data for Modbus operations
+  Map<int, int> _registerData = {};
   
   bool _isLoading = false;
   bool _isWriting = false;
-  int _lastLogCount = 0;
+  bool _isSaving = false;
+  bool _writeCompleted = false;  // Track if write was done, to enable save button
 
   @override
   void initState() {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
-    _lastLogCount = widget.bleManager.logs.length;
     
-    // Auto-send ?0001! when the fragment is opened
+    // Set up Modbus response callback
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+    
+    // Auto-send read command when the fragment is opened
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.bleManager.isConnected) {
         _sendCommand();
@@ -69,6 +70,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
   @override
   void dispose() {
     widget.bleManager.removeListener(_onBLEUpdate);
+    widget.bleManager.onModbusResponse = null;
     // Dispose all text controllers
     for (final controller in _controllers.values) {
       controller.dispose();
@@ -78,76 +80,76 @@ class _ConfigFragmentState extends State<ConfigFragment> {
 
   void _onBLEUpdate() {
     if (!mounted) return;
-    
-    // Check if there are new logs
-    if (widget.bleManager.logs.length > _lastLogCount) {
-      final newLogs = widget.bleManager.logs.sublist(_lastLogCount);
-      _lastLogCount = widget.bleManager.logs.length;
-      
-      // Look for JSON-formatted RX responses
-      for (final log in newLogs) {
-        if (log.startsWith('RX: {') && _isLoading) {
-          _parseJsonResponse(log);
-          break;
-        }
-      }
-    }
     setState(() {});
   }
 
-  void _parseJsonResponse(String jsonLog) {
-    if (!_isLoading) return;
+  void _handleModbusResponse() {
+    if (!mounted || !_isLoading) return;
     
+    final response = widget.bleManager.lastModbusResponse;
+    
+    // Check if this is a read response (FC 3)
+    if (response.length < 2 || response[1] != 0x03) {
+      return;
+    }
+    
+    final values = widget.bleManager.parseReadResponse(response);
+    if (values.isEmpty) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+    
+    // Parse the config registers (9-12 = 4 registers = 8 bytes)
+    // or FIELD_63 (register 64 = 1 register = 2 bytes)
+    if (response.length >= 3) {
+      final byteCount = response[2];
+      
+      if (byteCount == 8) {
+        _parseConfigRegisters(values);
+        return;
+      }
+      
+      if (byteCount == 2 && values.length == 1) {
+        _parseField63Register(values[0]);
+        return;
+      }
+    }
+  }
+  
+  void _parseConfigRegisters(List<int> values) {
     setState(() {
-      // First, extract all hex values to store the complete array
-      _fullArrayHex.clear();
+      // Store registers 9-12
+      for (int i = 0; i < values.length && i < 4; i++) {
+        _registerData[9 + i] = values[i];
+      }
       
-      // Parse all FIELD_X values in order (FIELD_1 to FIELD_96)
-      for (int i = 1; i <= 96; i++) {
-        final fieldName = 'FIELD_$i';
-        final pattern = '"$fieldName": "';
+      // Parse FIELD_8 (Register 9) - bit-packed nibbles
+      if (_registerData.containsKey(9)) {
+        final reg9 = _registerData[9]!;
+        _levelChkEna = ((reg9 >> 12) & 0xF) == 1 ? 'Yes' : 'No';
+        _votingChkEna = ((reg9 >> 8) & 0xF) == 1 ? 'Yes' : 'No';
+        _autoAdjustEna = ((reg9 >> 4) & 0xF) == 1 ? 'Yes' : 'No';
+        // Ignore unused nibble at (reg9 & 0xF)
+      }
+      
+      // Parse FIELD_9 (Register 10) - bit-packed nibbles
+      if (_registerData.containsKey(10)) {
+        final reg10 = _registerData[10]!;
+        _contDisable = ((reg10 >> 12) & 0xF) == 1 ? 'Yes' : 'No';
+        _shortDisableSys = ((reg10 >> 8) & 0xF) == 1 ? 'Yes' : 'No';
+        _fltDisable = ((reg10 >> 4) & 0xF) == 1 ? 'Yes' : 'No';
+        _procFltDisable = (reg10 & 0xF) == 1 ? 'Yes' : 'No';
+      }
+      
+      // Parse FIELD_10 (Register 11) - bit-packed nibbles
+      if (_registerData.containsKey(11)) {
+        final reg11 = _registerData[11]!;
+        _pwrFltDisable = ((reg11 >> 12) & 0xF) == 1 ? 'Yes' : 'No';
         
-        final startIndex = jsonLog.indexOf(pattern);
-        if (startIndex != -1) {
-          final valueStart = startIndex + pattern.length;
-          final valueEnd = jsonLog.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            final hexValue = jsonLog.substring(valueStart, valueEnd);
-            // Remove pipe and other non-hex characters
-            final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-            _fullArrayHex.add(cleanHex.isNotEmpty ? cleanHex : '0000');
-          } else {
-            _fullArrayHex.add('0000');
-          }
-        } else {
-          _fullArrayHex.add('0000');
-        }
-      }
-      
-      // Parse FIELD_8 - each hex digit represents a value
-      final field8Hex = _extractFieldHex(jsonLog, 'FIELD_8');
-      if (field8Hex != null && field8Hex.length >= 4) {
-        _levelChkEna = int.parse(field8Hex[0], radix: 16) == 1 ? 'Yes' : 'No';
-        _votingChkEna = int.parse(field8Hex[1], radix: 16) == 1 ? 'Yes' : 'No';
-        _autoAdjustEna = int.parse(field8Hex[2], radix: 16) == 1 ? 'Yes' : 'No';
-        _unused = int.parse(field8Hex[3], radix: 16);
-      }
-      
-      // Parse FIELD_9 - each hex digit represents a value (1=Yes/Disabled, 0=No/Enabled)
-      final field9Hex = _extractFieldHex(jsonLog, 'FIELD_9');
-      if (field9Hex != null && field9Hex.length >= 4) {
-        _contDisable = int.parse(field9Hex[0], radix: 16) == 1 ? 'Yes' : 'No';
-        _shortDisableSys = int.parse(field9Hex[1], radix: 16) == 1 ? 'Yes' : 'No';
-        _fltDisable = int.parse(field9Hex[2], radix: 16) == 1 ? 'Yes' : 'No';
-        _procFltDisable = int.parse(field9Hex[3], radix: 16) == 1 ? 'Yes' : 'No';
-      }
-      
-      // Parse FIELD_10 - each hex digit represents a value
-      final field10Hex = _extractFieldHex(jsonLog, 'FIELD_10');
-      if (field10Hex != null && field10Hex.length >= 4) {
-        _pwrFltDisable = int.parse(field10Hex[0], radix: 16) == 1 ? 'Yes' : 'No';
         // Map register values to display values: 1→0.5, 2→1, 3→2
-        final sensValue = int.parse(field10Hex[1], radix: 16);
+        final sensValue = (reg11 >> 8) & 0xF;
         if (sensValue == 1) {
           _sensitivity = '0.5';
         } else if (sensValue == 2) {
@@ -155,53 +157,58 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         } else if (sensValue == 3) {
           _sensitivity = '2';
         }
-        _sel420SteamMode = int.parse(field10Hex[2], radix: 16) == 1 ? 'Yes' : 'No';
-        _lastRmtAdr = int.parse(field10Hex[3], radix: 16);
         
+        _sel420SteamMode = ((reg11 >> 4) & 0xF) == 1 ? 'Yes' : 'No';
+        _lastRmtAdr = reg11 & 0xF;
         _controllers['lastRmtAdr']!.text = _lastRmtAdr.toString();
       }
       
-      // Parse FIELD_11 - first 2 hex digits and last 2 hex digits
-      final field11Hex = _extractFieldHex(jsonLog, 'FIELD_11');
-      if (field11Hex != null && field11Hex.length >= 4) {
-        _numGroundConnections = int.parse(field11Hex.substring(0, 2), radix: 16);
-        _totalChannels = int.parse(field11Hex.substring(2, 4), radix: 16);
-        
-        _controllers['numGroundConnections']!.text = _numGroundConnections.toString();
-        _controllers['totalChannels']!.text = _totalChannels.toString();
+      // Parse FIELD_11 (Register 12) - Interlock control
+      if (_registerData.containsKey(12)) {
+        final reg12 = _registerData[12]!;
+        _interlockControlEnable = ((reg12 >> 8) & 0xFF) == 1 ? 'Yes' : 'No';
+        _interlockControlChannel = reg12 & 0xFF;
+        _controllers['interlockControlChannel']!.text = _interlockControlChannel.toString();
       }
       
-      // Parse FIELD_63 - last 3 hex digits as decimal
-      final field63Hex = _extractFieldHex(jsonLog, 'FIELD_63');
-      if (field63Hex != null && field63Hex.length >= 3) {
-        // Take last 3 digits (rightmost)
-        final last3Digits = field63Hex.substring(field63Hex.length - 3);
-        _sysFltTimeDelay = int.parse(last3Digits, radix: 16);
-        _controllers['sysFltTimeDelay']!.text = _sysFltTimeDelay.toString();
-      }
-      
+      // Don't set _isLoading = false here, wait for register 64 response
+    });
+  }
+  
+  void _parseField63Register(int value) {
+    setState(() {
+      _registerData[64] = value;
+      // Extract last 3 hex digits (12 bits) - if reg is 0x1001, take 0x001
+      _sysFltTimeDelay = value & 0xFFF;
+      _controllers['sysFltTimeDelay']!.text = _sysFltTimeDelay.toString();
       _isLoading = false;
     });
   }
 
-  String? _extractFieldHex(String jsonLog, String fieldName) {
-    final pattern = '"$fieldName": "';
-    final startIndex = jsonLog.indexOf(pattern);
-    if (startIndex != -1) {
-      final valueStart = startIndex + pattern.length;
-      final valueEnd = jsonLog.indexOf('"', valueStart);
-      if (valueEnd != -1) {
-        try {
-          final hexValue = jsonLog.substring(valueStart, valueEnd);
-          // Remove pipe and other non-hex characters
-          final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-          return cleanHex;
-        } catch (e) {
-          return null;
+  
+
+  
+  // Helper method to poll register 0 until it becomes 0
+  Future<bool> _waitForRegister0ToBeZero({int maxAttempts = 30, int delayMs = 200}) async {
+    for (int i = 0; i < maxAttempts; i++) {
+      await Future.delayed(Duration(milliseconds: delayMs));
+      
+      // Read register 0
+      await widget.bleManager.readRegisters(startRegister: 0, quantity: 1);
+      
+      // Wait a bit for response
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // Check the response
+      final response = widget.bleManager.lastModbusResponse;
+      if (response.length >= 5 && response[1] == 0x03) {
+        final values = widget.bleManager.parseReadResponse(response);
+        if (values.isNotEmpty && values[0] == 0) {
+          return true; // Register 0 is now 0, device is ready
         }
       }
     }
-    return null;
+    return false; // Timeout
   }
 
   void _sendCommand() async {
@@ -212,32 +219,44 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       return;
     }
 
+    // Re-register callback in case another fragment overwrote it
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+
     setState(() {
       _isLoading = true;
+      _writeCompleted = false;  // Reset write status when reading fresh data
       // Reset all values
-      _levelChkEna = 'No';
-      _votingChkEna = 'No';
-      _autoAdjustEna = 'No';
-      _unused = 0;
-      _contDisable = 'No';
-      _shortDisableSys = 'No';
-      _fltDisable = 'No';
-      _procFltDisable = 'No';
-      _pwrFltDisable = 'No';
+      _levelChkEna = 'Wait...';
+      _votingChkEna = 'Wait...';
+      _autoAdjustEna = 'Wait...';
+      _contDisable = 'Wait...';
+      _shortDisableSys = 'Wait...';
+      _fltDisable = 'Wait...';
+      _procFltDisable = 'Wait...';
+      _pwrFltDisable = 'Wait...';
       _sensitivity = '0.5';
-      _sel420SteamMode = 'No';
+      _sel420SteamMode = 'Wait...';
       _lastRmtAdr = 0;
-      _numGroundConnections = 0;
-      _totalChannels = 0;
+      _interlockControlEnable = 'Wait...';
+      _interlockControlChannel = 0;
+      _sysFltTimeDelay = 0;
     });
 
     // Write 1 to register 0 before reading
     await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
-    await Future.delayed(const Duration(milliseconds: 200));
     
-    await widget.bleManager.sendString('?0001!');
+    // Wait 3 seconds for device to be ready
+    await Future.delayed(const Duration(seconds: 3));
     
-    Future.delayed(const Duration(seconds: 15), () {
+    // Read registers 9-12 (4 registers) for config fields
+    await widget.bleManager.readRegisters(startRegister: 9, quantity: 4);
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    // Read register 64 (FIELD_63)
+    await widget.bleManager.readRegisters(startRegister: 64, quantity: 1);
+    
+    // Timeout handler
+    Future.delayed(const Duration(seconds: 5), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
@@ -257,7 +276,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       return;
     }
 
-    if (_fullArrayHex.isEmpty || _fullArrayHex.length != 96) {
+    if (_registerData.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No data to write. Please read first.')),
       );
@@ -269,16 +288,16 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     });
 
     try {
-      // Create a copy of the full array
-      final modifiedArray = List<String>.from(_fullArrayHex);
+      // Prepare register values
+      final registerWrites = <int, int>{};
 
-      // Reconstruct FIELD_8 (index 7) from 4 hex digit values
+      // Build FIELD_8 (Register 9) - bit-packed nibbles (ignore unused nibble)
       try {
-        final f8_0 = (_levelChkEna == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f8_1 = (_votingChkEna == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f8_2 = (_autoAdjustEna == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f8_3 = _unused.toRadixString(16).toUpperCase().padLeft(1, '0');
-        modifiedArray[7] = '$f8_0$f8_1$f8_2$f8_3';
+        final f8_0 = (_levelChkEna == 'Yes') ? 1 : 0;
+        final f8_1 = (_votingChkEna == 'Yes') ? 1 : 0;
+        final f8_2 = (_autoAdjustEna == 'Yes') ? 1 : 0;
+        final f8_3 = 0;  // Unused nibble, always 0
+        registerWrites[9] = (f8_0 << 12) | (f8_1 << 8) | (f8_2 << 4) | f8_3;
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invalid value in FIELD_8')),
@@ -287,13 +306,13 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         return;
       }
 
-      // Reconstruct FIELD_9 (index 8) from 4 hex digit values (Yes=1/Disabled, No=0/Enabled)
+      // Build FIELD_9 (Register 10) - bit-packed nibbles
       try {
-        final f9_0 = (_contDisable == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f9_1 = (_shortDisableSys == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f9_2 = (_fltDisable == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f9_3 = (_procFltDisable == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        modifiedArray[8] = '$f9_0$f9_1$f9_2$f9_3';
+        final f9_0 = (_contDisable == 'Yes') ? 1 : 0;
+        final f9_1 = (_shortDisableSys == 'Yes') ? 1 : 0;
+        final f9_2 = (_fltDisable == 'Yes') ? 1 : 0;
+        final f9_3 = (_procFltDisable == 'Yes') ? 1 : 0;
+        registerWrites[10] = (f9_0 << 12) | (f9_1 << 8) | (f9_2 << 4) | f9_3;
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invalid value in FIELD_9')),
@@ -302,9 +321,10 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         return;
       }
 
-      // Reconstruct FIELD_10 (index 9) from 4 hex digit values
+      // Build FIELD_10 (Register 11) - bit-packed nibbles
       try {
-        final f10_0 = (_pwrFltDisable == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
+        final f10_0 = (_pwrFltDisable == 'Yes') ? 1 : 0;
+        
         // Map display values to register values: 0.5→1, 1→2, 2→3
         int sensRegValue = 1;
         if (_sensitivity == '0.5') {
@@ -314,10 +334,10 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         } else if (_sensitivity == '2') {
           sensRegValue = 3;
         }
-        final f10_1 = sensRegValue.toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f10_2 = (_sel420SteamMode == 'Yes' ? 1 : 0).toRadixString(16).toUpperCase().padLeft(1, '0');
-        final f10_3 = int.parse(_controllers['lastRmtAdr']!.text.trim()).toRadixString(16).toUpperCase().padLeft(1, '0');
-        modifiedArray[9] = '$f10_0$f10_1$f10_2$f10_3';
+        
+        final f10_2 = (_sel420SteamMode == 'Yes') ? 1 : 0;
+        final f10_3 = int.parse(_controllers['lastRmtAdr']!.text.trim());
+        registerWrites[11] = (f10_0 << 12) | (sensRegValue << 8) | (f10_2 << 4) | f10_3;
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invalid value in FIELD_10')),
@@ -326,55 +346,33 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         return;
       }
 
-      // Update FIELD_12 and FIELD_13 (indices 11 and 12) based on sensitivity selection
+      // Build FIELD_11 (Register 12) - Interlock Control
       try {
-        int field12Value, field13Value;
-        if (_sensitivity == '0.5') {
-          field12Value = 655;  // 0x28F
-          field13Value = 651;  // 0x28B
-        } else if (_sensitivity == '1') {
-          field12Value = 665;  // 0x299
-          field13Value = 660;  // 0x294
-        } else {  // '2'
-          field12Value = 420;  // 0x1A4
-          field13Value = 415;  // 0x19F
-        }
-        modifiedArray[11] = field12Value.toRadixString(16).toUpperCase().padLeft(4, '0');
-        modifiedArray[12] = field13Value.toRadixString(16).toUpperCase().padLeft(4, '0');
+        final interlockEnable = (_interlockControlEnable == 'Yes') ? 1 : 0;
+        final interlockChannel = int.parse(_controllers['interlockControlChannel']!.text.trim());
+        registerWrites[12] = (interlockEnable << 8) | interlockChannel;
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to update FIELD_12 and FIELD_13')),
+          const SnackBar(content: Text('Invalid value in Interlock Control')),
         );
         setState(() => _isWriting = false);
         return;
       }
 
-      // Reconstruct FIELD_11 (index 10) from 2 hex values (2 digits each)
+      // Write registers 9-12 (4 consecutive registers)
+      final values9to12 = [
+        registerWrites[9] ?? _registerData[9] ?? 0,
+        registerWrites[10] ?? _registerData[10] ?? 0,
+        registerWrites[11] ?? _registerData[11] ?? 0,
+        registerWrites[12] ?? _registerData[12] ?? 0,
+      ];
+      await widget.bleManager.writeRegisters(startRegister: 9, values: values9to12);
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      // Build FIELD_63 (Register 64) - write only lower 12 bits (last 3 hex digits)
       try {
-        final f11_0 = int.parse(_controllers['numGroundConnections']!.text.trim()).toRadixString(16).toUpperCase().padLeft(2, '0');
-        final f11_1 = int.parse(_controllers['totalChannels']!.text.trim()).toRadixString(16).toUpperCase().padLeft(2, '0');
-        modifiedArray[10] = '$f11_0$f11_1';
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid value in FIELD_11')),
-        );
-        setState(() => _isWriting = false);
-        return;
-      }
-
-      // Reconstruct FIELD_63 (index 62) - update last 3 digits while preserving first digit
-      try {
-        final currentField63 = modifiedArray[62];
         final decValue = int.parse(_controllers['sysFltTimeDelay']!.text.trim());
-        final hexValue = decValue.toRadixString(16).toUpperCase().padLeft(3, '0');
-        
-        // Preserve the first digit if field has 4 digits, otherwise just use the 3 digits
-        if (currentField63.length >= 4) {
-          final firstDigit = currentField63[0];
-          modifiedArray[62] = '$firstDigit$hexValue';
-        } else {
-          modifiedArray[62] = hexValue;
-        }
+        registerWrites[64] = decValue & 0xFFF;  // Last 3 hex digits (12 bits)
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invalid value in System Fault Time Delay')),
@@ -382,152 +380,89 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         setState(() => _isWriting = false);
         return;
       }
+      
+      // Write register 64 (FIELD_63)
+      await widget.bleManager.writeRegisters(startRegister: 64, values: [registerWrites[64]!]);
+      await Future.delayed(const Duration(milliseconds: 200));
 
-      // Reconstruct the command string with "|" prefix and "!" suffix
-      final commandString = '|${modifiedArray.join(',')}!';
-
-      // Show dialog with command being sent
-      bool dialogShown = false;
       if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A2E),
-            title: const Text(
-              'Sending Command',
-              style: TextStyle(color: Color(0xFF00E5FF)),
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Command String:',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0D0D1A),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: const Color(0xFF00E5FF).withOpacity(0.3),
-                      ),
-                    ),
-                    child: Text(
-                      commandString,
-                      style: const TextStyle(
-                        color: Color(0xFF00E5FF),
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Row(
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Color(0xFF00E5FF),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Text(
-                        'Sending in chunks...',
-                        style: TextStyle(color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-        dialogShown = true;
-      }
-
-      // Safety timeout: close dialog after 30 seconds
-      final timeoutTimer = Timer(const Duration(seconds: 30), () {
-        if (mounted) {
-          try {
-            if (dialogShown) {
-              Navigator.of(context, rootNavigator: true).pop();
-              dialogShown = false;
-            }
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Operation timeout - dialog auto-closed')),
-            );
-          } catch (_) {}
-        }
-      });
-
-      try {
-        // Send the write command
-        await widget.bleManager.sendString(commandString);
-
         // Write 2 to register 0 to commit
-        await Future.delayed(const Duration(seconds: 1));
+        await Future.delayed(const Duration(milliseconds: 300));
         await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
-        
-        // Wait 1 second, then write 5 to register 0 to finalize
-        await Future.delayed(const Duration(seconds: 1));
-        await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+        await Future.delayed(const Duration(milliseconds: 500));
 
-        // Cancel timeout and close dialog
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          Navigator.of(context, rootNavigator: true).pop();
-          dialogShown = false;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Write successful! Configuration saved.')),
-          );
-        }
-      } catch (e) {
-        // Cancel timeout and close dialog on error
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          try {
-            Navigator.of(context, rootNavigator: true).pop();
-            dialogShown = false;
-          } catch (_) {
-            // Dialog might already be closed
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Write failed: $e')),
-          );
-        }
-      } finally {
-        // Always cancel timer and close dialog in finally
-        timeoutTimer.cancel();
-        if (mounted && dialogShown) {
-          try {
-            Navigator.of(context, rootNavigator: true).pop();
-            dialogShown = false;
-          } catch (_) {}
-        }
         if (mounted) {
           setState(() {
-            _isWriting = false;
+            _writeCompleted = true;
           });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Write successful! Now press SAVE to finalize.'),
+              backgroundColor: Colors.green,
+            ),
+          );
         }
       }
     } catch (e) {
-      // Outer catch for any validation errors
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(content: Text('Write failed: $e')),
         );
+      }
+    } finally {
+      if (mounted) {
         setState(() {
           _isWriting = false;
+        });
+      }
+    }
+  }
+
+  void _saveCommand() async {
+    if (!widget.bleManager.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Not connected to device')),
+      );
+      return;
+    }
+
+    if (!_writeCompleted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please write configuration first')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      // Write 5 to register 0 to finalize/save
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      if (mounted) {
+        setState(() {
+          _writeCompleted = false;  // Reset after save
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Configuration saved successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
         });
       }
     }
@@ -715,7 +650,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                     )
                   : const Icon(Icons.settings, color: Colors.black, size: 20),
               label: Text(
-                _isLoading ? 'Sending ?0001!...' : 'Load Config (?0001!)',
+                _isLoading ? 'Loading Config...' : 'Load Configuration',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -738,7 +673,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && _fullArrayHex.isNotEmpty
+              onPressed: widget.bleManager.isConnected && !_isWriting && !_isSaving && _registerData.isNotEmpty
                   ? _writeCommand
                   : null,
               icon: _isWriting
@@ -752,7 +687,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                     )
                   : const Icon(Icons.edit, color: Colors.black, size: 20),
               label: Text(
-                _isWriting ? 'Writing...' : 'Write & Send ?0002!',
+                _isWriting ? 'Writing...' : 'Write to Device',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -761,6 +696,43 @@ class _ConfigFragmentState extends State<ConfigFragment> {
               ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFFF6B35),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 12),
+          
+          // Save button
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: widget.bleManager.isConnected && !_isWriting && !_isSaving && _writeCompleted
+                  ? _saveCommand
+                  : null,
+              icon: _isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black,
+                      ),
+                    )
+                  : const Icon(Icons.save, color: Colors.black, size: 20),
+              label: Text(
+                _isSaving ? 'Saving...' : 'Save Configuration',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _writeCompleted ? const Color(0xFF4CAF50) : Colors.grey,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
@@ -863,11 +835,11 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       
                       const SizedBox(height: 20),
                       
-                      // FIELD_11 Section
+                      // FIELD_11 Section - Interlock Control
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8, top: 4),
                         child: Text(
-                          'FIELD 11 - Connection Info',
+                          'FIELD 11 - Interlock Control',
                           style: TextStyle(
                             color: Color(0xFFFFEB3B),
                             fontSize: 15,
@@ -875,9 +847,11 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                           ),
                         ),
                       ),
-                      _buildConfigItem('NUMBER OF GROUND CONNECTIONS', 'numGroundConnections', color: const Color(0xFFFFEB3B)),
+                      _buildDropdownItem('INTERLOCK CONTROL ENABLE', _interlockControlEnable, (value) {
+                        setState(() => _interlockControlEnable = value!);
+                      }, color: const Color(0xFFFFEB3B)),
                       const SizedBox(height: 8),
-                      _buildConfigItem('TOTAL NUMBER OF CHANNELS', 'totalChannels', color: const Color(0xFFFFEB3B)),
+                      _buildConfigItem('INTERLOCK CONTROL CHANNEL', 'interlockControlChannel', color: const Color(0xFFFFEB3B)),
                       
                       const SizedBox(height: 20),
                       

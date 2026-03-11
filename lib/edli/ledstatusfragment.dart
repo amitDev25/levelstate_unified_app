@@ -18,7 +18,6 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   List<int> _channelStatuses = [];
   
   bool _isLoading = false;
-  int _lastLogCount = 0;
   String? _errorMessage;
   
   final Map<String, bool> _blinkStates = {};
@@ -33,8 +32,18 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   void initState() {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
-    _lastLogCount = widget.bleManager.logs.length;
+    
+    // Set up Modbus response callback
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+    
     _startBlinkTimers();
+    
+    // Auto-load data when the fragment is opened
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.bleManager.isConnected) {
+        _sendCommand();
+      }
+    });
   }
 
   @override
@@ -43,6 +52,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     _slowBlinkTimer?.cancel();
     _parseTimeoutTimer?.cancel();
     widget.bleManager.removeListener(_onBLEUpdate);
+    widget.bleManager.onModbusResponse = null;
     super.dispose();
   }
 
@@ -78,93 +88,58 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
 
   void _onBLEUpdate() {
     if (!mounted) return;
-    
-    try {
-      if (widget.bleManager.logs.length > _lastLogCount) {
-        final newLogs = widget.bleManager.logs.sublist(_lastLogCount);
-        _lastLogCount = widget.bleManager.logs.length;
-        
-        for (final log in newLogs) {
-          if (log.startsWith('RX: {') && _isLoading) {
-            _parseJsonResponse(log);
-            break;
-          }
-        }
-      }
-      if (mounted) {
-        setState(() {});
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = 'Update error: $e';
-          _isLoading = false;
-        });
-      }
-    }
+    setState(() {});
   }
 
-  void _parseJsonResponse(String jsonLog) {
-    if (!_isLoading || !mounted) return;
+  void _handleModbusResponse() {
+    print('[LedStatusFragment] _handleModbusResponse called, mounted=$mounted, _isLoading=$_isLoading');
+    if (!mounted || !_isLoading) return;
     
-    try {
-      _parseTimeoutTimer?.cancel();
-      
+    final response = widget.bleManager.lastModbusResponse;
+    print('[LedStatusFragment] Response length: ${response.length}, FC: ${response.length > 1 ? response[1] : "N/A"}');
+    
+    // Check if this is a read response (FC 3)
+    if (response.length < 2 || response[1] != 0x03) {
+      return;
+    }
+    
+    final values = widget.bleManager.parseReadResponse(response);
+    print('[LedStatusFragment] Parsed values: $values');
+    if (values.isEmpty) {
       setState(() {
-        final field1Pattern = '"FIELD_1": "';
-        final field1Start = jsonLog.indexOf(field1Pattern);
-        if (field1Start != -1) {
-          final valueStart = field1Start + field1Pattern.length;
-          final valueEnd = jsonLog.indexOf('"', valueStart);
-          if (valueEnd != -1) {
-            final hexValue = jsonLog.substring(valueStart, valueEnd);
-            final cleanHex = hexValue.replaceAll('|', '').replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-            if (cleanHex.isNotEmpty) {
-              _numChannels = int.parse(cleanHex, radix: 16);
-            }
-          }
-        }
-        
-        _sfStatus = _extractFieldValue(jsonLog, 'FIELD_2');
-        _pfStatus = _extractFieldValue(jsonLog, 'FIELD_3');
-        
-        _channelStatuses.clear();
-        for (int i = 0; i < _numChannels; i++) {
-          final fieldNum = 4 + i;
-          final status = _extractFieldValue(jsonLog, 'FIELD_$fieldNum');
-          _channelStatuses.add(status);
-        }
-        
         _isLoading = false;
-        _errorMessage = null;
       });
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Parse error: $e';
-        });
-      }
+      return;
     }
-  }
-
-  int _extractFieldValue(String jsonLog, String fieldName) {
-    try {
-      final pattern = '"$fieldName": "';
-      final startIndex = jsonLog.indexOf(pattern);
-      if (startIndex != -1) {
-        final valueStart = startIndex + pattern.length;
-        final valueEnd = jsonLog.indexOf('"', valueStart);
-        if (valueEnd != -1) {
-          final hexValue = jsonLog.substring(valueStart, valueEnd);
-          final cleanHex = hexValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '');
-          return int.parse(cleanHex, radix: 16);
-        }
+    
+    // Cancel timeout timer since we got data
+    _parseTimeoutTimer?.cancel();
+    
+    setState(() {
+      // First value is FIELD_1 (Register 2) = num channels
+      if (values.isNotEmpty) {
+        _numChannels = values[0];
       }
-    } catch (e) {
-      return 0;
-    }
-    return 0;
+      
+      // Second value is FIELD_2 (Register 3) = SF status
+      if (values.length > 1) {
+        _sfStatus = values[1];
+      }
+      
+      // Third value is FIELD_3 (Register 4) = PF status
+      if (values.length > 2) {
+        _pfStatus = values[2];
+      }
+      
+      // Remaining values are FIELD_4+ (Register 5+) = channel LED statuses
+      _channelStatuses.clear();
+      for (int i = 3; i < values.length && (i - 3) < _numChannels; i++) {
+        _channelStatuses.add(values[i]);
+      }
+      
+      _isLoading = false;
+      _errorMessage = null;
+    });
   }
 
   void _sendCommand() async {
@@ -179,6 +154,9 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
       return;
     }
 
+    // Re-register callback in case another fragment overwrote it
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+
     try {
       if (mounted) {
         setState(() {
@@ -191,20 +169,28 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
         });
       }
 
-      await widget.bleManager.sendString('?0003!');
+      // Write 3 to register 0
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [3]);
       
+      // Wait 3 seconds
+      await Future.delayed(const Duration(seconds: 3));
+      
+      // Read registers:
+      // FIELD_1 (Register 2) = num channels
+      // FIELD_2 (Register 3) = SF status
+      // FIELD_3 (Register 4) = PF status
+      // FIELD_4+ (Register 5+) = channel statuses
+      // Read up to 35 registers (3 status + 32 channel statuses max)
+      await widget.bleManager.readRegisters(startRegister: 2, quantity: 35);
+      
+      // Timeout handler - longer timeout for large register reads
       _parseTimeoutTimer?.cancel();
-      _parseTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      _parseTimeoutTimer = Timer(const Duration(seconds: 8), () {
         if (_isLoading && mounted) {
           setState(() {
             _isLoading = false;
-            _errorMessage = 'Response timeout';
+            _errorMessage = 'Response timeout - device did not respond';
           });
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Response timeout')),
-            );
-          }
         }
       });
     } catch (e) {
