@@ -19,6 +19,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   
   bool _isLoading = false;
   String? _errorMessage;
+  bool _wasConnected = false;  // Track previous connection state
   
   final Map<String, bool> _blinkStates = {};
   Timer? _fastBlinkTimer;
@@ -31,6 +32,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   @override
   void initState() {
     super.initState();
+    
+    // Initialize connection state tracking
+    _wasConnected = widget.bleManager.isConnected;
+    
     widget.bleManager.addListener(_onBLEUpdate);
     
     // Set up Modbus response callback
@@ -38,10 +43,14 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     
     _startBlinkTimers();
     
-    // Auto-load data when the fragment is opened
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Auto-load data when the fragment is opened (with small delay to ensure stable initialization)
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (widget.bleManager.isConnected) {
-        _sendCommand();
+        // Small delay to ensure callback is properly registered after tab switch
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (mounted) {
+          _sendCommand();
+        }
       }
     });
   }
@@ -88,6 +97,19 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
 
   void _onBLEUpdate() {
     if (!mounted) return;
+    
+    // Check if we just connected
+    final isConnectedNow = widget.bleManager.isConnected;
+    if (isConnectedNow && !_wasConnected && !_isLoading) {
+      // Connection just established, trigger auto-load
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted && widget.bleManager.isConnected) {
+          _sendCommand();
+        }
+      });
+    }
+    _wasConnected = isConnectedNow;
+    
     setState(() {});
   }
 
@@ -174,6 +196,9 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
       
       // Wait 3 seconds
       await Future.delayed(const Duration(seconds: 3));
+      
+      // Re-register callback right before reading to ensure it's still active
+      widget.bleManager.onModbusResponse = _handleModbusResponse;
       
       // Read registers:
       // FIELD_1 (Register 2) = num channels

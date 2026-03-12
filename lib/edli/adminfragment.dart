@@ -325,8 +325,28 @@ class _AdminFragmentState extends State<AdminFragment> {
         );
         
         // Write 2 to register 0 to commit
-        await Future.delayed(const Duration(milliseconds: 500));
         await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
+        
+        // Temporarily disable callback during polling
+        widget.bleManager.onModbusResponse = null;
+        
+        // Poll register 0 until it becomes 0 (device ready)
+        final ready = await _waitForRegister0ToBeZero();
+        if (!ready) {
+          if (mounted) {
+            setState(() {
+              _isWriting = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Write timeout - device not ready')),
+            );
+          }
+          widget.bleManager.onModbusResponse = _handleModbusResponse;
+          return;
+        }
+        
+        // Re-register callback after polling
+        widget.bleManager.onModbusResponse = _handleModbusResponse;
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -364,6 +384,27 @@ class _AdminFragmentState extends State<AdminFragment> {
     try {
       // Write 5 to register 0 to finalize/save
       await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+      
+      // Temporarily disable callback during polling
+      widget.bleManager.onModbusResponse = null;
+      
+      // Poll register 0 until it becomes 0 (device ready)
+      final ready = await _waitForRegister0ToBeZero();
+      if (!ready) {
+        if (mounted) {
+          setState(() {
+            _isSaving = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Save timeout - device not ready')),
+          );
+        }
+        widget.bleManager.onModbusResponse = _handleModbusResponse;
+        return;
+      }
+      
+      // Re-register callback after polling
+      widget.bleManager.onModbusResponse = _handleModbusResponse;
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -448,6 +489,24 @@ class _AdminFragmentState extends State<AdminFragment> {
       
       // Write 5 to register 0 to finalize
       await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
+      
+      // Temporarily disable callback during polling
+      widget.bleManager.onModbusResponse = null;
+      
+      // Poll register 0 until it becomes 0 (device ready)
+      final readyFinal = await _waitForRegister0ToBeZero();
+      if (!readyFinal) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Timeout waiting for finalization')),
+          );
+        }
+        widget.bleManager.onModbusResponse = _handleModbusResponse;
+        return;
+      }
+      
+      // Re-register callback after polling
+      widget.bleManager.onModbusResponse = _handleModbusResponse;
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
