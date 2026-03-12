@@ -180,6 +180,8 @@ class BLEManager extends ChangeNotifier {
   final int defaultSlaveID = 247;
   
   // ── Activation state ─────────────────────────────────────────────────────
+  bool isDeviceActivated = false; // True if device is activated (reg 95 != 0)
+  bool isCheckingActivation = false; // True while checking activation on connect
   bool needsActivation = false;
   bool isActivating = false;
   bool isAppDisabled = false; // Flag to disable entire app if API returns -1
@@ -483,6 +485,154 @@ class BLEManager extends ChangeNotifier {
     return false; // Timeout
   }
 
+  /// PUBLIC: Check activation status automatically on connect
+  Future<void> checkActivationOnConnect() async {
+    if (!isConnected) {
+      logs.add('❌ ERROR: Device not connected');
+      notifyListeners();
+      return;
+    }
+
+    try {
+      isCheckingActivation = true;
+      isDeviceActivated = false;
+      needsActivation = false;
+      notifyListeners();
+      
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      logs.add('🔍 Checking device activation status...');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      notifyListeners();
+      
+      // Step 1: Write 5 to register 0
+      logs.add('📝 Step 1: Writing 5 to reg 0...');
+      notifyListeners();
+      await writeRegisters(startRegister: 0, values: [5]);
+      logs.add('✓ Wrote 5 to reg 0');
+      notifyListeners();
+      
+      // Step 2: Wait for register 0 to become 0
+      logs.add('⏳ Step 2: Waiting for reg 0 to become 0...');
+      notifyListeners();
+      
+      // Disable callback during polling
+      onModbusResponse = null;
+      final ready1 = await _waitForRegister0ToBeZero();
+      
+      if (!ready1) {
+        logs.add('❌ Timeout waiting for reg 0 after write 5');
+        logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        isCheckingActivation = false;
+        notifyListeners();
+        return;
+      }
+      
+      logs.add('✓ Register 0 is now 0');
+      notifyListeners();
+      
+      // Step 3: Write 1 to register 0
+      logs.add('📝 Step 3: Writing 1 to reg 0...');
+      notifyListeners();
+      await writeRegisters(startRegister: 0, values: [1]);
+      logs.add('✓ Wrote 1 to reg 0');
+      notifyListeners();
+      
+      // Step 4: Wait for register 0 to become 0
+      logs.add('⏳ Step 4: Waiting for reg 0 to become 0...');
+      notifyListeners();
+      
+      final ready2 = await _waitForRegister0ToBeZero();
+      
+      if (!ready2) {
+        logs.add('❌ Timeout waiting for reg 0 after write 1');
+        logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        isCheckingActivation = false;
+        notifyListeners();
+        return;
+      }
+      
+      logs.add('✓ Register 0 is now 0');
+      notifyListeners();
+      
+      // Small delay after polling completes
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // Step 5: Read register 95
+      logs.add('📖 Step 5: Reading register 95...');
+      notifyListeners();
+      
+      // Clear response buffer before reading
+      lastModbusResponse = Uint8List(0);
+      
+      await readRegisters(startRegister: 95, quantity: 1);
+      
+      // Wait for response
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      logs.add('🔍 Response length: ${lastModbusResponse.length} bytes');
+      if (lastModbusResponse.length >= 5) {
+        logs.add('   FC: 0x${lastModbusResponse[1].toRadixString(16).padLeft(2, '0').toUpperCase()}');
+      }
+      notifyListeners();
+      
+      if (lastModbusResponse.length >= 5 && lastModbusResponse[1] == 0x03) {
+        final values = parseReadResponse(lastModbusResponse);
+        logs.add('   Parsed ${values.length} register value(s)');
+        notifyListeners();
+        
+        if (values.isNotEmpty) {
+          final reg95Value = values[0];
+          logs.add('✓ Register 95 = 0x${reg95Value.toRadixString(16).padLeft(4, '0').toUpperCase()} (Dec: $reg95Value)');
+          notifyListeners();
+          
+          if (reg95Value == 0) {
+            // Device is NOT activated
+            logs.add('');
+            logs.add('⚠️  Device is NOT activated!');
+            logs.add('   Please click the ACTIVATE button to activate.');
+            logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            isDeviceActivated = false;
+            needsActivation = true;
+            isCheckingActivation = false;
+            notifyListeners();
+            return;
+          } else {
+            // Device is already activated
+            logs.add('');
+            logs.add('✅ Device is activated!');
+            logs.add('   (Register 95 is not 0000)');
+            logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            isDeviceActivated = true;
+            needsActivation = false;
+            isCheckingActivation = false;
+            notifyListeners();
+            return;
+          }
+        } else {
+          logs.add('❌ No values parsed from response');
+          notifyListeners();
+        }
+      } else {
+        logs.add('❌ Invalid or no response for register 95');
+        if (lastModbusResponse.length > 0) {
+          logs.add('   Response: ${_toHexString(lastModbusResponse)}');
+        }
+        notifyListeners();
+      }
+      
+      logs.add('❌ Failed to read register 95');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      isCheckingActivation = false;
+      notifyListeners();
+      
+    } catch (e) {
+      logs.add('❌ Activation check error: $e');
+      logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      isCheckingActivation = false;
+      notifyListeners();
+    }
+  }
+
   /// PUBLIC: Run device initialization sequence
   Future<void> runInitializationSequence() async {
     if (!isConnected) {
@@ -608,7 +758,7 @@ class BLEManager extends ChangeNotifier {
 
   /// PUBLIC: Complete device activation (called when Activate button is clicked)
   Future<void> completeActivation() async {
-    if (!isConnected || !needsActivation || deviceHexData.isEmpty) {
+    if (!isConnected || !needsActivation) {
       logs.add('❌ ERROR: Cannot complete activation');
       notifyListeners();
       return;
@@ -616,7 +766,6 @@ class BLEManager extends ChangeNotifier {
 
     try {
       isActivating = true;
-      needsActivation = false;
       notifyListeners();
       
       logs.add('');
@@ -625,16 +774,62 @@ class BLEManager extends ChangeNotifier {
       logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       notifyListeners();
       
-      // Step 7: Get device location
-      logs.add('📍 Step 7: Getting device location...');
+      // Step 1: Read device ID (registers 89-94, quantity 6)
+      logs.add('📖 Step 1: Reading device ID (regs 89-94)...');
+      notifyListeners();
+      await readRegisters(startRegister: 89, quantity: 6);
+      
+      // Wait for response and parse values
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (lastModbusResponse.length >= 5 && lastModbusResponse[1] == 0x03) {
+        final values = parseReadResponse(lastModbusResponse);
+        if (values.isNotEmpty && values.length >= 6) {
+          logs.add('✓ Device ID raw values:');
+          for (int i = 0; i < values.length; i++) {
+            logs.add('  Reg ${89 + i} = ${values[i]} (0x${values[i].toRadixString(16).padLeft(4, '0').toUpperCase()})');
+          }
+          notifyListeners();
+          
+          // Step 2: Swap bytes for 6 registers (89-94)
+          logs.add('');
+          logs.add('🔄 Step 2: Swapping bytes for device ID...');
+          notifyListeners();
+          
+          final swappedParts = <String>[];
+          for (int i = 0; i < 6; i++) {
+            final original = values[i].toRadixString(16).padLeft(4, '0').toUpperCase();
+            final swapped = original.substring(2, 4) + original.substring(0, 2);
+            logs.add('  Reg ${89 + i}: $original → $swapped');
+            swappedParts.add(swapped);
+          }
+          
+          deviceHexData = swappedParts.join('');
+          logs.add('✓ Device hex string: $deviceHexData');
+          notifyListeners();
+        } else {
+          logs.add('❌ Failed to parse device ID registers');
+          isActivating = false;
+          notifyListeners();
+          return;
+        }
+      } else {
+        logs.add('❌ No valid response for device ID');
+        isActivating = false;
+        notifyListeners();
+        return;
+      }
+      
+      // Step 3: Get device location
+      logs.add('');
+      logs.add('📍 Step 3: Getting device location...');
       notifyListeners();
       final location = await _getDeviceLocation();
       logs.add('✓ Location: $location');
       notifyListeners();
       
-      // Step 8: Post to HMAC API
+      // Step 4: Post to HMAC API
       logs.add('');
-      logs.add('🌐 Step 8: Posting to HMAC API...');
+      logs.add('🌐 Step 4: Posting to HMAC API...');
       logs.add('  Device hex: $deviceHexData');
       notifyListeners();
       
@@ -654,29 +849,31 @@ class BLEManager extends ChangeNotifier {
       logs.add('✓ API response received');
       notifyListeners();
       
-      // Step 9: Parse and swap HMAC response
+      // Step 5: Parse and swap HMAC response
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       final hmacHash = (json['hmac_sha256'] as String).trim();
       
-      // Check if API returned -1 (device blocked/unauthorized)
+      // Check if API returned -1 (device not registered)
       if (hmacHash == '-1') {
         logs.add('');
-        logs.add('❌ CRITICAL: Device authorization failed!');
-        logs.add('   API returned -1 - Device is blocked');
+        logs.add('❌ DEVICE NOT REGISTERED!');
+        logs.add('   API returned -1 - This device is not registered in the system.');
+        logs.add('   Register writes will not be performed.');
+        logs.add('   Please contact support to register this device.');
         logs.add('   App will be disabled.');
         logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         isAppDisabled = true;
         isActivating = false;
         needsActivation = false;
         notifyListeners();
-        return;
+        return; // Exit early - NO writes to register 95 or beyond
       }
       
       logs.add('✓ HMAC received: $hmacHash');
       notifyListeners();
       
       logs.add('');
-      logs.add('🔄 Step 9: Swapping HMAC response bytes...');
+      logs.add('🔄 Step 5: Swapping HMAC response bytes...');
       notifyListeners();
       
       // Swap the HMAC response in same way
@@ -694,9 +891,9 @@ class BLEManager extends ChangeNotifier {
       logs.add('✓ Swapped HMAC: $hmacSwapped');
       notifyListeners();
       
-      // Step 10: Write HMAC to registers starting from 95
+      // Step 6: Write HMAC to registers starting from 95
       logs.add('');
-      logs.add('📝 Step 10: Writing HMAC to registers (starting at 95)...');
+      logs.add('📝 Step 6: Writing HMAC to registers (starting at 95)...');
       notifyListeners();
       
       int regOffset = 95;
@@ -716,32 +913,67 @@ class BLEManager extends ChangeNotifier {
       logs.add('✓ All HMAC chunks written to registers 95-${regOffset - 1}');
       notifyListeners();
       
-      // Step 11: Write 2 to register 0 (commit)
+      // Step 7: Write 2 to register 0 (commit)
       logs.add('');
-      logs.add('📝 Step 11: Writing 2 to reg 0 (commit)...');
+      logs.add('📝 Step 7: Writing 2 to reg 0 (commit)...');
       notifyListeners();
       await writeRegisters(startRegister: 0, values: [2]);
       logs.add('✓ Wrote 2 to reg 0');
       notifyListeners();
       
-      // Step 12: Wait 3 seconds
-      logs.add('⏳ Step 12: Waiting 3 seconds...');
-      notifyListeners();
-      await Future.delayed(const Duration(seconds: 3));
-      logs.add('✓ Wait complete');
+      // Step 8: Wait for register 0 to become 0
+      logs.add('⏳ Step 8: Waiting for reg 0 to become 0...');
       notifyListeners();
       
-      // Step 13: Write 5 to register 0 (finalize)
-      logs.add('📝 Step 13: Writing 5 to reg 0 (finalize)...');
+      // Disable callback during polling
+      onModbusResponse = null;
+      final ready1 = await _waitForRegister0ToBeZero();
+      
+      if (!ready1) {
+        logs.add('❌ Timeout waiting for reg 0 after write 2');
+        logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        isActivating = false;
+        needsActivation = true;
+        notifyListeners();
+        return;
+      }
+      
+      logs.add('✓ Register 0 is now 0');
+      notifyListeners();
+      
+      // Step 9: Write 5 to register 0 (finalize)
+      logs.add('📝 Step 9: Writing 5 to reg 0 (finalize)...');
       notifyListeners();
       await writeRegisters(startRegister: 0, values: [5]);
       logs.add('✓ Wrote 5 to reg 0');
+      notifyListeners();
+      
+      // Step 10: Wait for register 0 to become 0
+      logs.add('⏳ Step 10: Waiting for reg 0 to become 0...');
+      notifyListeners();
+      
+      final ready2 = await _waitForRegister0ToBeZero();
+      
+      if (!ready2) {
+        logs.add('❌ Timeout waiting for reg 0 after write 5');
+        logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        isActivating = false;
+        needsActivation = true;
+        notifyListeners();
+        return;
+      }
+      
+      logs.add('✓ Register 0 is now 0');
       notifyListeners();
       
       logs.add('');
       logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       logs.add('✅ Activation complete!');
       logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      
+      // Mark device as activated
+      isDeviceActivated = true;
+      needsActivation = false;
       isActivating = false;
       notifyListeners();
       
@@ -841,6 +1073,16 @@ class BLEManager extends ChangeNotifier {
           _writeChar = null;
           _notifyChar = null;
           _notifySub?.cancel();
+          
+          // Reset activation states on disconnect
+          isDeviceActivated = false;
+          isCheckingActivation = false;
+          needsActivation = false;
+          isActivating = false;
+          isAppDisabled = false;
+          deviceHexData = '';
+          hmacSwappedData.clear();
+          
           logs.add('Disconnected');
           notifyListeners();
         }
@@ -875,6 +1117,9 @@ class BLEManager extends ChangeNotifier {
           _notifySub = c.onValueReceived.listen(_handleReceive);
           logs.add('Characteristics configured');
           notifyListeners();
+          
+          // Automatically check activation status after connection
+          await checkActivationOnConnect();
           return;
         }
       }
@@ -896,9 +1141,10 @@ class BLEManager extends ChangeNotifier {
 
     if (_writeChar != null) {
       logs.add('Characteristics configured');
-      logs.add('→ Go to Custom Command tab and press');
-      logs.add('  "Start Initialization Sequence" button');
       notifyListeners();
+      
+      // Automatically check activation status after connection
+      await checkActivationOnConnect();
     } else {
       status = 'No writable characteristic found';
       logs.add('ERROR: No writable characteristic found');
@@ -1083,6 +1329,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
   final BLEManager _ble = BLEManager();
   late TabController _tabController;
   bool _isSaved = false;
+  bool _bannerDismissed = false;
 
   @override
   void initState() {
@@ -1116,7 +1363,12 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
 
   void _onUpdate() {
     if (!mounted) return;
-    setState(() {});
+    setState(() {
+      // Reset banner dismissal when device is activated or disconnected
+      if (_ble.isDeviceActivated || !_ble.isConnected) {
+        _bannerDismissed = false;
+      }
+    });
   }
 
   Future<void> _toggleSaveDevice() async {
@@ -1510,13 +1762,13 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Icon(
-                      Icons.block,
+                      Icons.error_outline,
                       size: 80,
                       color: Colors.redAccent,
                     ),
                     const SizedBox(height: 24),
                     const Text(
-                      'Device Unauthorized',
+                      'Device Not Registered',
                       style: TextStyle(
                         fontSize: 24,
                         fontWeight: FontWeight.bold,
@@ -1526,9 +1778,9 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'This device has been blocked by the server.\n'
-                      'Authorization failed (API returned -1).\n\n'
-                      'Please contact support for assistance.',
+                      'This device is not registered in the system.\n'
+                      'Registration failed (API returned -1).\n\n'
+                      'Please contact support to register this device.',
                       style: TextStyle(
                         color: Colors.white70,
                         fontSize: 16,
@@ -1538,6 +1790,132 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                     ),
                   ],
                 ),
+              ),
+            ),
+          ),
+        
+        // Blocking overlay when device needs activation
+        if (_ble.isConnected && !_ble.isCheckingActivation && !_ble.isDeviceActivated && !_ble.isAppDisabled && !_bannerDismissed && _tabController.index != 2)
+          Container(
+            color: Colors.black.withOpacity(0.95),
+            child: Center(
+              child: Container(
+                margin: const EdgeInsets.all(32),
+                padding: const EdgeInsets.all(32),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A2E),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.orange, width: 2),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        IconButton(
+                          onPressed: () {
+                            setState(() {
+                              _bannerDismissed = true;
+                            });
+                          },
+                          icon: const Icon(
+                            Icons.close,
+                            color: Colors.white54,
+                            size: 24,
+                          ),
+                          tooltip: 'Close',
+                        ),
+                      ],
+                    ),
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      size: 80,
+                      color: Colors.orange,
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Device Not Activated',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'This device needs to be activated before use.\n'
+                      'Please click the ACTIVATE button below to activate the device.\n\n'
+                      'Or access the Custom Command tab (Terminal) to proceed without activation.',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                        height: 1.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 32),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _ble.isActivating
+                            ? null
+                            : () => _ble.completeActivation(),
+                        icon: _ble.isActivating
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.check_circle_outline, size: 24),
+                        label: Text(
+                          _ble.isActivating ? 'Activating...' : 'ACTIVATE DEVICE',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        
+        // Overlay when checking activation status
+        if (_ble.isCheckingActivation)
+          Container(
+            color: Colors.black.withOpacity(0.8),
+            child: const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(
+                    color: Color(0xFF00E5FF),
+                  ),
+                  SizedBox(height: 24),
+                  Text(
+                    'Checking device activation status...',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 16,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
               ),
             ),
           ),

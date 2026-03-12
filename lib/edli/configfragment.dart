@@ -61,9 +61,11 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
     
-    // Auto-send read command when the fragment is opened
+    // Auto-send read command when the fragment is opened (only if not checking activation)
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (widget.bleManager.isConnected) {
+      if (widget.bleManager.isConnected && 
+          !widget.bleManager.isCheckingActivation &&
+          widget.bleManager.isDeviceActivated) {
         // Set up Modbus response callback
         widget.bleManager.onModbusResponse = _handleModbusResponse;
         // Small delay to ensure callback is ready

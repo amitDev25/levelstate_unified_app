@@ -25,9 +25,11 @@ class _HomeFragmentState extends State<HomeFragment> {
     // Set up Modbus response callback
     widget.bleManager.onModbusResponse = _handleModbusResponse;
     
-    // Auto-load data when the fragment is opened
+    // Auto-load data when the fragment is opened (only if not checking activation)
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.bleManager.isConnected) {
+      if (widget.bleManager.isConnected && 
+          !widget.bleManager.isCheckingActivation &&
+          widget.bleManager.isDeviceActivated) {
         _sendCommand();
       }
     });

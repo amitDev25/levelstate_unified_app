@@ -54,9 +54,11 @@ class _AdminFragmentState extends State<AdminFragment> {
     // Set up Modbus response callback
     widget.bleManager.onModbusResponse = _handleModbusResponse;
     
-    // Auto-send command when tab is opened
+    // Auto-send command when tab is opened (only if not checking activation)
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.bleManager.isConnected) {
+      if (widget.bleManager.isConnected && 
+          !widget.bleManager.isCheckingActivation &&
+          widget.bleManager.isDeviceActivated) {
         _sendCommand();
       }
     });

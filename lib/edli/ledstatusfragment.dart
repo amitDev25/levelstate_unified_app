@@ -20,6 +20,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   bool _isLoading = false;
   String? _errorMessage;
   bool _wasConnected = false;  // Track previous connection state
+  bool _wasCheckingActivation = false;  // Track previous activation check state
   
   final Map<String, bool> _blinkStates = {};
   Timer? _fastBlinkTimer;
@@ -35,6 +36,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     
     // Initialize connection state tracking
     _wasConnected = widget.bleManager.isConnected;
+    _wasCheckingActivation = widget.bleManager.isCheckingActivation;
     
     widget.bleManager.addListener(_onBLEUpdate);
     
@@ -100,15 +102,34 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     
     // Check if we just connected
     final isConnectedNow = widget.bleManager.isConnected;
-    if (isConnectedNow && !_wasConnected && !_isLoading) {
-      // Connection just established, trigger auto-load
+    final isCheckingActivationNow = widget.bleManager.isCheckingActivation;
+    
+    if (isConnectedNow && !_wasConnected && !_isLoading && 
+        !widget.bleManager.isCheckingActivation) {
+      // Connection just established and not checking activation, trigger auto-load
       Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted && widget.bleManager.isConnected) {
+        if (mounted && widget.bleManager.isConnected && 
+            !widget.bleManager.isCheckingActivation &&
+            widget.bleManager.isDeviceActivated) {
           _sendCommand();
         }
       });
     }
+    
+    // Check if activation check just completed successfully
+    if (_wasCheckingActivation && !isCheckingActivationNow && 
+        widget.bleManager.isDeviceActivated && !_isLoading) {
+      // Activation check just completed successfully, auto-reload LED status
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted && widget.bleManager.isConnected && 
+            widget.bleManager.isDeviceActivated) {
+          _sendCommand();
+        }
+      });
+    }
+    
     _wasConnected = isConnectedNow;
+    _wasCheckingActivation = isCheckingActivationNow;
     
     setState(() {});
   }
