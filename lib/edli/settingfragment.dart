@@ -75,37 +75,41 @@ class _SettingFragmentState extends State<SettingFragment> {
       return;
     }
     
-    setState(() {
-      // Store all received register values
-      final byteCount = response[2];
-      
-      // First read: Register 12 (FIELD_11) - 1 register = 2 bytes
-      if (byteCount == 2 && values.length == 1 && !_readingChannelSettings && !_readingEnergisedDelay) {
-        _timeoutTimer?.cancel();  // Cancel timeout for this read
+    // Store all received register values
+    final byteCount = response[2];
+    
+    // First read: Register 12 (FIELD_11) - 1 register = 2 bytes
+    if (byteCount == 2 && values.length == 1 && !_readingChannelSettings && !_readingEnergisedDelay) {
+      _timeoutTimer?.cancel();  // Cancel timeout for this read
+      setState(() {
         _registerData[12] = values[0];
         _totalChannels = values[0] & 0xFF;  // Lower byte
-        
-        // Now read channel settings based on _totalChannels
-        _readChannelSettingsRegisters();
-        return;  // Wait for next read
-      }
+      });
       
-      // Second read: Channel settings registers (16 to 16+_totalChannels-1)
-      if (_readingChannelSettings && byteCount == _totalChannels * 2) {
-        _timeoutTimer?.cancel();  // Cancel timeout for this read
+      // Now read channel settings based on _totalChannels (call outside setState)
+      _readChannelSettingsRegisters();
+      return;  // Wait for next read
+    }
+    
+    // Second read: Channel settings registers (16 to 16+_totalChannels-1)
+    if (_readingChannelSettings && byteCount == _totalChannels * 2) {
+      _timeoutTimer?.cancel();  // Cancel timeout for this read
+      setState(() {
         for (int i = 0; i < values.length && i < _totalChannels; i++) {
           _registerData[16 + i] = values[i];
         }
         _readingChannelSettings = false;
-        
-        // Now read energised/delay registers
-        _readEnergisedDelayRegisters();
-        return;  // Wait for next read
-      }
+      });
       
-      // Third read: Energised/delay registers (65 to 65+_totalChannels-1)
-      if (_readingEnergisedDelay && byteCount == _totalChannels * 2 && _registerData.containsKey(16)) {
-        _timeoutTimer?.cancel();  // Cancel timeout for this read
+      // Now read energised/delay registers (call outside setState)
+      _readEnergisedDelayRegisters();
+      return;  // Wait for next read
+    }
+    
+    // Third read: Energised/delay registers (65 to 65+_totalChannels-1)
+    if (_readingEnergisedDelay && byteCount == _totalChannels * 2 && _registerData.containsKey(16)) {
+      _timeoutTimer?.cancel();  // Cancel timeout for this read
+      setState(() {
         for (int i = 0; i < values.length && i < _totalChannels; i++) {
           _registerData[65 + i] = values[i];
         }
@@ -114,10 +118,33 @@ class _SettingFragmentState extends State<SettingFragment> {
         // Now parse all channel data
         _parseChannelData();
         _isLoading = false;
-      }
-    });
+      });
+    }
   }
-  
+
+  // Helper method to poll register 0 until it becomes 0
+  Future<bool> _waitForRegister0ToBeZero({int maxAttempts = 30, int delayMs = 200}) async {
+    for (int i = 0; i < maxAttempts; i++) {
+      await Future.delayed(Duration(milliseconds: delayMs));
+      
+      // Read register 0
+      await widget.bleManager.readRegisters(startRegister: 0, quantity: 1);
+      
+      // Wait a bit for response
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // Check the response
+      final response = widget.bleManager.lastModbusResponse;
+      if (response.length >= 5 && response[1] == 0x03) {
+        final values = widget.bleManager.parseReadResponse(response);
+        if (values.isNotEmpty && values[0] == 0) {
+          return true; // Register 0 is now 0, device is ready
+        }
+      }
+    }
+    return false; // Timeout
+  }
+
   void _parseChannelData() {
     _channels.clear();
     
@@ -185,8 +212,12 @@ class _SettingFragmentState extends State<SettingFragment> {
     // Write 1 to register 0 before reading
     await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
     
-    // Wait 3 seconds for device to be ready
-    await Future.delayed(const Duration(seconds: 3));
+    
+    // Wait 2 seconds for device to be ready
+    await Future.delayed(const Duration(seconds: 2));
+    
+    // Re-register callback right before reading to ensure it's still active
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
     
     // Read Register 12 (FIELD_11) to get total channels
     await widget.bleManager.readRegisters(startRegister: 12, quantity: 1);
@@ -207,7 +238,14 @@ class _SettingFragmentState extends State<SettingFragment> {
     }
     
     await Future.delayed(const Duration(milliseconds: 500));
-    _readingChannelSettings = true;
+    
+    if (!mounted) return;
+    
+    // Set flag and re-register callback BEFORE reading
+    setState(() {
+      _readingChannelSettings = true;
+    });
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
     
     // Read only the required number of channel setting registers
     await widget.bleManager.readRegisters(startRegister: 16, quantity: _totalChannels);
@@ -218,7 +256,14 @@ class _SettingFragmentState extends State<SettingFragment> {
   
   void _readEnergisedDelayRegisters() async {
     await Future.delayed(const Duration(milliseconds: 500));
-    _readingEnergisedDelay = true;
+    
+    if (!mounted) return;
+    
+    // Set flag and re-register callback BEFORE reading
+    setState(() {
+      _readingEnergisedDelay = true;
+    });
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
     
     // Read only the required number of energised/delay registers
     await widget.bleManager.readRegisters(startRegister: 65, quantity: _totalChannels);
@@ -229,7 +274,7 @@ class _SettingFragmentState extends State<SettingFragment> {
   
   void _startTimeoutTimer() {
     _timeoutTimer?.cancel();
-    _timeoutTimer = Timer(const Duration(seconds: 8), () {
+    _timeoutTimer = Timer(const Duration(seconds: 12), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
@@ -334,7 +379,23 @@ class _SettingFragmentState extends State<SettingFragment> {
       if (mounted) {
         // Write 2 to register 0 to commit
         await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
-        await Future.delayed(const Duration(milliseconds: 500));
+        
+        // Temporarily unregister callback during polling
+        widget.bleManager.onModbusResponse = null;
+        
+        // Poll register 0 until it becomes 0 (device ready)
+        final ready = await _waitForRegister0ToBeZero();
+        if (!ready) {
+          if (mounted) {
+            setState(() {
+              _isWriting = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Write timeout - device not ready')),
+            );
+          }
+          return;
+        }
 
         if (mounted) {
           setState(() {
@@ -385,7 +446,23 @@ class _SettingFragmentState extends State<SettingFragment> {
     try {
       // Write 5 to register 0 to finalize/save
       await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
-      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // Temporarily unregister callback during polling
+      widget.bleManager.onModbusResponse = null;
+      
+      // Poll register 0 until it becomes 0 (device ready)
+      final ready = await _waitForRegister0ToBeZero();
+      if (!ready) {
+        if (mounted) {
+          setState(() {
+            _isSaving = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Save timeout - device not ready')),
+          );
+        }
+        return;
+      }
 
       if (mounted) {
         setState(() {

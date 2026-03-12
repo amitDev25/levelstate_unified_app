@@ -113,6 +113,9 @@ class _HomeFragmentState extends State<HomeFragment> {
     // Wait 3 seconds
     await Future.delayed(const Duration(seconds: 3));
     
+    // Re-register callback right before reading to ensure it's still active
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+    
     // Read all registers in one operation:
     // Register 2: FIELD_1 (total channels)
     // Registers 3-4: Reserved/unused (FIELD_2, FIELD_3)

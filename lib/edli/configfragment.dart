@@ -50,18 +50,24 @@ class _ConfigFragmentState extends State<ConfigFragment> {
   bool _isWriting = false;
   bool _isSaving = false;
   bool _writeCompleted = false;  // Track if write was done, to enable save button
+  Timer? _timeoutTimer;
+  
+  // Track which responses we've received during a read operation
+  bool _receivedConfigRegs = false;
+  bool _receivedReg64 = false;
 
   @override
   void initState() {
     super.initState();
     widget.bleManager.addListener(_onBLEUpdate);
     
-    // Set up Modbus response callback
-    widget.bleManager.onModbusResponse = _handleModbusResponse;
-    
     // Auto-send read command when the fragment is opened
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (widget.bleManager.isConnected) {
+        // Set up Modbus response callback
+        widget.bleManager.onModbusResponse = _handleModbusResponse;
+        // Small delay to ensure callback is ready
+        await Future.delayed(const Duration(milliseconds: 100));
         _sendCommand();
       }
     });
@@ -69,6 +75,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
 
   @override
   void dispose() {
+    _timeoutTimer?.cancel();
     widget.bleManager.removeListener(_onBLEUpdate);
     widget.bleManager.onModbusResponse = null;
     // Dispose all text controllers
@@ -171,7 +178,14 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         _controllers['interlockControlChannel']!.text = _interlockControlChannel.toString();
       }
       
-      // Don't set _isLoading = false here, wait for register 64 response
+      // Mark that we've received config registers
+      _receivedConfigRegs = true;
+      
+      // Only stop loading if we've received both responses
+      if (_receivedReg64) {
+        _timeoutTimer?.cancel();
+        _isLoading = false;
+      }
     });
   }
   
@@ -181,7 +195,15 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       // Extract last 3 hex digits (12 bits) - if reg is 0x1001, take 0x001
       _sysFltTimeDelay = value & 0xFFF;
       _controllers['sysFltTimeDelay']!.text = _sysFltTimeDelay.toString();
-      _isLoading = false;
+      
+      // Mark that we've received register 64
+      _receivedReg64 = true;
+      
+      // Only stop loading if we've received both responses
+      if (_receivedConfigRegs) {
+        _timeoutTimer?.cancel();
+        _isLoading = false;
+      }
     });
   }
 
@@ -225,6 +247,9 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     setState(() {
       _isLoading = true;
       _writeCompleted = false;  // Reset write status when reading fresh data
+      _registerData.clear();  // Clear old register data
+      _receivedConfigRegs = false;  // Reset response tracking flags
+      _receivedReg64 = false;
       // Reset all values to defaults (don't use 'Wait...' for dropdowns as it causes assertion error)
       _levelChkEna = 'No';
       _votingChkEna = 'No';
@@ -240,10 +265,17 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       _interlockControlEnable = 'No';
       _interlockControlChannel = 0;
       _sysFltTimeDelay = 0;
+      // Reset text controllers
+      _controllers['lastRmtAdr']!.text = '0';
+      _controllers['interlockControlChannel']!.text = '0';
+      _controllers['sysFltTimeDelay']!.text = '0';
     });
 
     // Write 1 to register 0 before reading
     await widget.bleManager.writeRegisters(startRegister: 0, values: [1]);
+    
+    // Temporarily unregister callback during polling to avoid incorrect parsing
+    widget.bleManager.onModbusResponse = null;
     
     // Poll register 0 until it becomes 0 (device ready)
     final ready = await _waitForRegister0ToBeZero();
@@ -256,11 +288,15 @@ class _ConfigFragmentState extends State<ConfigFragment> {
           const SnackBar(content: Text('Device not ready - timeout')),
         );
       }
+      _timeoutTimer?.cancel();  // Cancel timeout timer
       return;
     }
     
     // Re-register callback after polling
     widget.bleManager.onModbusResponse = _handleModbusResponse;
+    
+    // Small delay to ensure callback is ready
+    await Future.delayed(const Duration(milliseconds: 100));
     
     // Read registers 9-12 (4 registers) for config fields
     await widget.bleManager.readRegisters(startRegister: 9, quantity: 4);
@@ -269,8 +305,9 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     // Read register 64 (FIELD_63)
     await widget.bleManager.readRegisters(startRegister: 64, quantity: 1);
     
-    // Timeout handler
-    Future.delayed(const Duration(seconds: 5), () {
+    // Set up timeout handler with cancellable timer
+    _timeoutTimer?.cancel();  // Cancel any existing timer
+    _timeoutTimer = Timer(const Duration(seconds: 5), () {
       if (_isLoading && mounted) {
         setState(() {
           _isLoading = false;
@@ -384,9 +421,12 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       await Future.delayed(const Duration(milliseconds: 200));
       
       // Build FIELD_63 (Register 64) - write only lower 12 bits (last 3 hex digits)
+      // Preserve the upper 4 bits from the original register value
       try {
         final decValue = int.parse(_controllers['sysFltTimeDelay']!.text.trim());
-        registerWrites[64] = decValue & 0xFFF;  // Last 3 hex digits (12 bits)
+        final originalReg64 = _registerData[64] ?? 0;
+        final upperNibble = originalReg64 & 0xF000;  // Preserve upper 4 bits
+        registerWrites[64] = upperNibble | (decValue & 0xFFF);  // Combine upper 4 bits + lower 12 bits
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invalid value in System Fault Time Delay')),
@@ -403,7 +443,23 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         // Write 2 to register 0 to commit
         await Future.delayed(const Duration(milliseconds: 300));
         await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
-        await Future.delayed(const Duration(milliseconds: 500));
+        
+        // Temporarily unregister callback during polling
+        widget.bleManager.onModbusResponse = null;
+        
+        // Poll register 0 until it becomes 0 (device ready)
+        final ready = await _waitForRegister0ToBeZero();
+        if (!ready) {
+          if (mounted) {
+            setState(() {
+              _isWriting = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Write timeout - device not ready')),
+            );
+          }
+          return;
+        }
 
         if (mounted) {
           setState(() {
@@ -454,7 +510,23 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     try {
       // Write 5 to register 0 to finalize/save
       await widget.bleManager.writeRegisters(startRegister: 0, values: [5]);
-      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // Temporarily unregister callback during polling
+      widget.bleManager.onModbusResponse = null;
+      
+      // Poll register 0 until it becomes 0 (device ready)
+      final ready = await _waitForRegister0ToBeZero();
+      if (!ready) {
+        if (mounted) {
+          setState(() {
+            _isSaving = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Save timeout - device not ready')),
+          );
+        }
+        return;
+      }
 
       if (mounted) {
         setState(() {
