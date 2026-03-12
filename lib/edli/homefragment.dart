@@ -201,7 +201,7 @@ class _HomeFragmentState extends State<HomeFragment> {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  'Total Channels: $_totalChannels',
+                  'Total Channels: ${_channelValues.where((v) => v != 0).length}',
                   style: const TextStyle(
                     color: Color(0xFF00E5FF),
                     fontSize: 18,
@@ -226,50 +226,79 @@ class _HomeFragmentState extends State<HomeFragment> {
                       ),
                     ),
                   )
-                : GridView.builder(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      mainAxisSpacing: 12,
-                      crossAxisSpacing: 12,
-                      childAspectRatio: 1.2,
-                    ),
-                    itemCount: _channelValues.length,
-                    itemBuilder: (context, index) {
-                      return Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1A1A2E),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: const Color(0xFF00E5FF).withOpacity(0.3),
+                : () {
+                    // Filter out channels with value 0
+                    final nonZeroChannels = <Map<String, int>>[];
+                    for (int i = 0; i < _channelValues.length; i++) {
+                      if (_channelValues[i] != 0) {
+                        nonZeroChannels.add({
+                          'index': i,
+                          'value': _channelValues[i],
+                        });
+                      }
+                    }
+                    
+                    if (nonZeroChannels.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'All channels are at 0',
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 16,
                           ),
                         ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              'Channel ${index + 1}',
-                              style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              '${_channelValues[index]}',
-                              style: const TextStyle(
-                                color: Color(0xFF00E5FF),
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                fontFamily: 'monospace',
-                              ),
-                            ),
-                          ],
-                        ),
                       );
-                    },
-                  ),
+                    }
+                    
+                    return GridView.builder(
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        mainAxisSpacing: 12,
+                        crossAxisSpacing: 12,
+                        childAspectRatio: 1.2,
+                      ),
+                      itemCount: nonZeroChannels.length,
+                      itemBuilder: (context, index) {
+                        final channelData = nonZeroChannels[index];
+                        final channelIndex = channelData['index']!;
+                        final channelValue = channelData['value']!;
+                        
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1A1A2E),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: const Color(0xFF00E5FF).withOpacity(0.3),
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                'Channel ${channelIndex + 1}',
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '$channelValue',
+                                style: const TextStyle(
+                                  color: Color(0xFF00E5FF),
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  }(),
           ),
         ],
       ),
