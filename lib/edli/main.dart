@@ -1697,7 +1697,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
             child: TabBarView(
                 controller: _tabController,
                 children: [
-                  LedStatusFragment(bleManager: _ble),
+                  LedStatusFragment(bleManager: _ble, tabController: _tabController),
                   HomeFragment(bleManager: _ble),
                   CustomCommandTab(ble: _ble),
                   AdminFragment(bleManager: _ble),

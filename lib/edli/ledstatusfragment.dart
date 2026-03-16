@@ -4,8 +4,9 @@ import 'main.dart';
 
 class LedStatusFragment extends StatefulWidget {
   final BLEManager bleManager;
+  final TabController tabController;
 
-  const LedStatusFragment({super.key, required this.bleManager});
+  const LedStatusFragment({super.key, required this.bleManager, required this.tabController});
 
   @override
   State<LedStatusFragment> createState() => _LedStatusFragmentState();
@@ -21,11 +22,14 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   String? _errorMessage;
   bool _wasConnected = false;  // Track previous connection state
   bool _wasCheckingActivation = false;  // Track previous activation check state
+  bool _isPageActive = false;  // Track if LED Status tab is currently active
+  bool _isSilentRefresh = false;  // Track if current operation is a silent refresh
   
   final Map<String, bool> _blinkStates = {};
   Timer? _fastBlinkTimer;
   Timer? _slowBlinkTimer;
   Timer? _parseTimeoutTimer;
+  Timer? _autoRefreshTimer;  // Timer for auto-refreshing LED status every 5 seconds
 
   @override
   bool get wantKeepAlive => true;
@@ -43,7 +47,16 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     // Set up Modbus response callback
     widget.bleManager.onModbusResponse = _handleModbusResponse;
     
+    // Listen to tab changes
+    widget.tabController.addListener(_onTabChanged);
+    
+    // Check initial tab state (LED Status is tab 0)
+    _isPageActive = widget.tabController.index == 0;
+    
     _startBlinkTimers();
+    
+    // Start auto-refresh timer for real-time monitoring
+    _startAutoRefreshTimer();
     
     // Auto-load data when the fragment is opened (with small delay to ensure stable initialization)
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -59,12 +72,39 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
 
   @override
   void dispose() {
+    widget.tabController.removeListener(_onTabChanged);
     _fastBlinkTimer?.cancel();
     _slowBlinkTimer?.cancel();
     _parseTimeoutTimer?.cancel();
+    _autoRefreshTimer?.cancel();
     widget.bleManager.removeListener(_onBLEUpdate);
     widget.bleManager.onModbusResponse = null;
     super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (!mounted) return;
+    
+    // LED Status tab is index 0
+    final bool isOnLedStatusTab = widget.tabController.index == 0;
+    
+    if (isOnLedStatusTab != _isPageActive) {
+      setState(() {
+        _isPageActive = isOnLedStatusTab;
+      });
+      
+      if (isOnLedStatusTab) {
+        print('[LedStatusFragment] Switched to LED Status tab (index ${widget.tabController.index}) - resuming auto-refresh');
+        // Optionally do an immediate refresh when returning to the page
+        if (widget.bleManager.isConnected && 
+            widget.bleManager.isDeviceActivated && 
+            !widget.bleManager.isCheckingActivation) {
+          _silentRefresh();
+        }
+      } else {
+        print('[LedStatusFragment] Switched away from LED Status tab to index ${widget.tabController.index} - pausing auto-refresh');
+      }
+    }
   }
 
   void _startBlinkTimers() {
@@ -94,6 +134,75 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
       });
     } catch (e) {
       _errorMessage = 'Timer error: $e';
+    }
+  }
+
+  void _startAutoRefreshTimer() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      
+      // Only refresh if on LED Status tab AND device is ready AND not already busy
+      if (_isPageActive && 
+          widget.bleManager.isConnected && 
+          widget.bleManager.isDeviceActivated && 
+          !widget.bleManager.isCheckingActivation &&
+          !_isLoading &&
+          !_isSilentRefresh) {
+        print('[LedStatusFragment] Auto-refreshing LED status (every 5 seconds)');
+        _silentRefresh();
+      } else {
+        print('[LedStatusFragment] Skipping auto-refresh - Page active: $_isPageActive, Connected: ${widget.bleManager.isConnected}, Activated: ${widget.bleManager.isDeviceActivated}, Loading: $_isLoading, Silent refresh in progress: $_isSilentRefresh');
+      }
+    });
+  }
+
+  void _silentRefresh() async {
+    if (!mounted) return;
+    
+    if (!widget.bleManager.isConnected) {
+      return;
+    }
+
+    // Re-register callback in case another fragment overwrote it
+    widget.bleManager.onModbusResponse = _handleModbusResponse;
+
+    try {
+      // Mark as silent refresh (don't show loading indicator)
+      _isSilentRefresh = true;
+
+      // Write 3 to register 0
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [3]);
+      
+      // Wait 3 seconds
+      await Future.delayed(const Duration(seconds: 3));
+      
+      // Re-register callback right before reading to ensure it's still active
+      widget.bleManager.onModbusResponse = _handleModbusResponse;
+      
+      // Read registers (same as _sendCommand)
+      await widget.bleManager.readRegisters(startRegister: 2, quantity: 35);
+      
+      // Timeout handler
+      _parseTimeoutTimer?.cancel();
+      _parseTimeoutTimer = Timer(const Duration(seconds: 8), () {
+        if (_isSilentRefresh && mounted) {
+          setState(() {
+            _isSilentRefresh = false;
+            _errorMessage = 'Silent refresh timeout';
+          });
+        }
+      });
+    } catch (e) {
+      print('[LedStatusFragment] Silent refresh error: $e');
+      if (mounted) {
+        setState(() {
+          _isSilentRefresh = false;
+        });
+      }
     }
   }
 
@@ -135,8 +244,12 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   }
 
   void _handleModbusResponse() {
-    print('[LedStatusFragment] _handleModbusResponse called, mounted=$mounted, _isLoading=$_isLoading');
-    if (!mounted || !_isLoading) return;
+    print('[LedStatusFragment] _handleModbusResponse called, mounted=$mounted, _isLoading=$_isLoading, _isSilentRefresh=$_isSilentRefresh');
+    
+    // For silent refresh, we don't check _isLoading
+    // For regular load, we check _isLoading
+    if (!mounted) return;
+    if (!_isLoading && !_isSilentRefresh) return;
     
     final response = widget.bleManager.lastModbusResponse;
     print('[LedStatusFragment] Response length: ${response.length}, FC: ${response.length > 1 ? response[1] : "N/A"}');
@@ -151,6 +264,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     if (values.isEmpty) {
       setState(() {
         _isLoading = false;
+        _isSilentRefresh = false;
       });
       return;
     }
@@ -181,8 +295,13 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
       }
       
       _isLoading = false;
+      _isSilentRefresh = false;
       _errorMessage = null;
     });
+    
+    if (_isSilentRefresh) {
+      print('[LedStatusFragment] Silent refresh completed successfully');
+    }
   }
 
   void _sendCommand() async {
@@ -344,9 +463,22 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                             ? constraints.maxWidth * 0.85
                             : 400.0;
                         
+                        // Calculate dynamic height based on number of channels
+                        double containerHeight;
+                        if (_numChannels > 0) {
+                          // Base: header (30) + divider (1) + SF/PF section (60) + bottom text (18) + padding (24)
+                          final baseHeight = 133.0;
+                          final ledSize = 35.0;
+                          final gapPerLed = 2.0; // Minimal gap between LED rows
+                          final channelsHeight = (_numChannels * (ledSize + gapPerLed));
+                          containerHeight = (baseHeight + channelsHeight).clamp(200.0, constraints.maxHeight * 0.98);
+                        } else {
+                          containerHeight = 250.0; // Minimal size when no data
+                        }
+                        
                         return Container(
                           width: displayWidth,
-                          height: constraints.maxHeight * 0.98,
+                          height: containerHeight,
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: const Color(0xFFD4C5A0),
@@ -367,7 +499,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                             child: Column(
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  padding: const EdgeInsets.symmetric(vertical: 6),
                                   child: const Text(
                                     'EDLI',
                                     style: TextStyle(
@@ -385,31 +517,30 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                                   margin: const EdgeInsets.symmetric(horizontal: 20),
                                 ),
                                 
-                                const SizedBox(height: 8),
+                                const SizedBox(height: 4),
                                 
                                 Expanded(
                                   child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
                                     child: LayoutBuilder(
                                       builder: (context, constraints) {
                                         // Calculate LED size based on number of channels and available space
-                                        double ledHeight = 40.0;
-                                        double ledWidth = 50.0;
+                                        // LEDs are now square, so width = height
+                                        double ledSize = 35.0;
                                         
                                         if (_numChannels > 0) {
                                           // Calculate available height: total height - SF/PF section
-                                          // SF/PF section = text (12) + spacing (4) + LED (ledHeight) + gap (4)
-                                          final sfpfSectionHeight = 12 + 4 + ledHeight + 4;
+                                          // SF/PF section = text (12) + spacing (4) + LED (ledSize) + gap (4)
+                                          final sfpfSectionHeight = 12 + 4 + ledSize + 4;
                                           final availableForChannels = constraints.maxHeight - sfpfSectionHeight;
                                           
-                                          // Each channel row needs: LED height + vertical padding (2)
-                                          final requiredHeightPerChannel = ledHeight + 2;
+                                          // Each channel row needs: LED height + vertical padding (0.5)
+                                          final requiredHeightPerChannel = ledSize + 2.0;
                                           final totalRequired = requiredHeightPerChannel * _numChannels;
                                           
                                           // If it doesn't fit, reduce LED size
                                           if (totalRequired > availableForChannels) {
-                                            ledHeight = ((availableForChannels / _numChannels) - 2).clamp(15.0, 40.0);
-                                            ledWidth = (ledHeight * 1.25).clamp(25.0, 50.0);
+                                            ledSize = ((availableForChannels / _numChannels) - 2.0).clamp(15.0, 35.0);
                                           }
                                         }
                                         
@@ -419,26 +550,26 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                                             Row(
                                               mainAxisAlignment: MainAxisAlignment.center,
                                               children: [
-                                                _buildTopLED('SF', _sfStatus, ledWidth, ledHeight),
-                                                const SizedBox(width: 12),
-                                                _buildTopLED('PF', _pfStatus, ledWidth, ledHeight),
+                                                _buildTopLED('SF', _sfStatus, ledSize),
+                                                const SizedBox(width: 3),
+                                                _buildTopLED('PF', _pfStatus, ledSize),
                                               ],
                                             ),
                                             
-                                            const SizedBox(height: 4),
+                                            const SizedBox(height: 2),
                                             
                                             // Channel LEDs Grid
                                             if (_numChannels > 0)
                                               Expanded(
                                                 child: Column(
-                                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                                  mainAxisAlignment: MainAxisAlignment.start,
                                                   children: List.generate(_numChannels, (index) {
                                                     final channelNum = _numChannels - index;
                                                     final channelStatus = (channelNum - 1) < _channelStatuses.length 
                                                         ? _channelStatuses[channelNum - 1] 
                                                         : 0;
                                                     
-                                                    return _buildChannelRow(channelNum, channelStatus, ledWidth, ledHeight);
+                                                    return _buildChannelRow(channelNum, channelStatus, ledSize);
                                                   }),
                                                 ),
                                               )
@@ -462,22 +593,14 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                                 ),
                                 
                                 Padding(
-                                  padding: const EdgeInsets.only(bottom: 8, top: 4),
-                                  child: Container(
-                                    width: 10,
-                                    height: 10,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: widget.bleManager.isConnected 
-                                          ? Colors.green 
-                                          : Colors.red,
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: (widget.bleManager.isConnected ? Colors.green : Colors.red).withOpacity(0.6),
-                                          blurRadius: 8,
-                                          spreadRadius: 2,
-                                        ),
-                                      ],
+                                  padding: const EdgeInsets.only(bottom: 6, top: 2),
+                                  child: Text(
+                                    'Levelstate',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      letterSpacing: 0.5,
                                     ),
                                   ),
                                 ),
@@ -494,7 +617,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     );
   }
   
-  Widget _buildTopLED(String label, int status, double width, double height) {
+  Widget _buildTopLED(String label, int status, double size) {
     bool isOn = false;
     const Color ledColor = Colors.yellow; // Always yellow for SF and PF
     
@@ -518,10 +641,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
             fontWeight: FontWeight.bold,
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 2),
         Container(
-          width: width,
-          height: height,
+          width: size,
+          height: size,
           decoration: BoxDecoration(
             color: isOn ? ledColor : Colors.grey[850],
             border: Border.all(
@@ -541,7 +664,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     );
   }
   
-  Widget _buildChannelRow(int channelNum, int channelStatus, double ledWidth, double ledHeight) {
+  Widget _buildChannelRow(int channelNum, int channelStatus, double ledSize) {
     final lsb = channelStatus & 0xF;
     
     bool leftOn = false;
@@ -584,7 +707,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     }
     
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 1),
+      padding: const EdgeInsets.symmetric(vertical: 1.0),
       child: Row(
         children: [
           // Left spacer for centering
@@ -593,10 +716,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
             child: Container(),
           ),
           
-          // Left LED (Green)
+          // Left LED (Green) - Square
           Container(
-            width: ledWidth,
-            height: ledHeight,
+            width: ledSize,
+            height: ledSize,
             decoration: BoxDecoration(
               color: leftOn ? Colors.green : Colors.grey[850],
               border: Border.all(
@@ -613,12 +736,12 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
             ),
           ),
           
-          const SizedBox(width: 12),
+          const SizedBox(width: 3),
           
-          // Right LED (Red)
+          // Right LED (Red) - Square
           Container(
-            width: ledWidth,
-            height: ledHeight,
+            width: ledSize,
+            height: ledSize,
             decoration: BoxDecoration(
               color: rightOn ? Colors.red : Colors.grey[850],
               border: Border.all(
