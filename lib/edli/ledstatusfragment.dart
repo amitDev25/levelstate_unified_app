@@ -565,7 +565,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                                               children: [
                                                 _buildTopLED('SF', _sfStatus, ledSize),
                                                 const SizedBox(width: 3),
-                                                _buildTopLED('PF', _pfStatus, ledSize),
+                                                _buildTopLED('PF', _pfStatus, ledSize, showLabel: _numChannels <= 8),
                                               ],
                                             ),
                                             
@@ -630,7 +630,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     );
   }
   
-  Widget _buildTopLED(String label, int status, double size) {
+  Widget _buildTopLED(String label, int status, double size, {bool showLabel = true}) {
     bool isOn = false;
     const Color ledColor = Colors.yellow; // Always yellow for SF and PF
     
@@ -646,12 +646,18 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     
     return Column(
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
+        Visibility(
+          visible: showLabel,
+          maintainSize: true,
+          maintainAnimation: true,
+          maintainState: true,
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
         const SizedBox(height: 2),

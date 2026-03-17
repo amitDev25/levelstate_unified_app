@@ -979,7 +979,13 @@ class _SettingFragmentState extends State<SettingFragment> {
                 onTap: enabled ? () {
                   setState(() {
                     final currentValue = int.tryParse(controller.text.trim()) ?? 0;
-                    if (currentValue > 0) {
+                    if (label == 'Delay') {
+                      if (currentValue > 2) {
+                        controller.text = (currentValue - 1).toString();
+                      } else {
+                        controller.text = '2';
+                      }
+                    } else if (currentValue > 0) {
                       controller.text = (currentValue - 1).toString();
                     }
                   });
