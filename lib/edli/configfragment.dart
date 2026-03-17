@@ -29,8 +29,8 @@ class _ConfigFragmentState extends State<ConfigFragment> {
   String _sel420SteamMode = 'No';
   int _lastRmtAdr = 0;
   
-  // FIELD_11 (Register 12) - Interlock Control
-  String _interlockControlEnable = 'No';
+  // FIELD_11 (Register 12) - Ground connection number + interlock channel
+  int _groundConnectionNumber = 0;
   int _interlockControlChannel = 0;
   
   // FIELD_63 (Register 64) - System Fault Time Delay
@@ -39,6 +39,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
   // Text controllers for numeric fields only
   final Map<String, TextEditingController> _controllers = {
     'lastRmtAdr': TextEditingController(text: '0'),
+    'interlockControlEnable': TextEditingController(text: '0'),
     'interlockControlChannel': TextEditingController(text: '0'),
     'sysFltTimeDelay': TextEditingController(text: '0'),
   };
@@ -55,6 +56,8 @@ class _ConfigFragmentState extends State<ConfigFragment> {
   // Track which responses we've received during a read operation
   bool _receivedConfigRegs = false;
   bool _receivedReg64 = false;
+  bool _awaitingConfigRegsResponse = false;
+  bool _awaitingReg64Response = false;
 
   @override
   void initState() {
@@ -115,12 +118,14 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     if (response.length >= 3) {
       final byteCount = response[2];
       
-      if (byteCount == 8) {
+      if (byteCount == 8 && _awaitingConfigRegsResponse) {
+        _awaitingConfigRegsResponse = false;
         _parseConfigRegisters(values);
         return;
       }
       
-      if (byteCount == 2 && values.length == 1) {
+      if (byteCount == 2 && values.length == 1 && _awaitingReg64Response) {
+        _awaitingReg64Response = false;
         _parseField63Register(values[0]);
         return;
       }
@@ -172,10 +177,11 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         _controllers['lastRmtAdr']!.text = _lastRmtAdr.toString();
       }
       
-      // Parse FIELD_11 (Register 12) - Interlock control
+      // Parse FIELD_11 (Register 12) - Ground connection number + interlock channel
       if (_registerData.containsKey(12)) {
         final reg12 = _registerData[12]!;
-        _interlockControlEnable = ((reg12 >> 8) & 0xFF) == 1 ? 'Yes' : 'No';
+        _groundConnectionNumber = (reg12 >> 8) & 0xFF;
+        _controllers['interlockControlEnable']!.text = _groundConnectionNumber.toString();
         _interlockControlChannel = reg12 & 0xFF;
         _controllers['interlockControlChannel']!.text = _interlockControlChannel.toString();
       }
@@ -252,6 +258,8 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       _registerData.clear();  // Clear old register data
       _receivedConfigRegs = false;  // Reset response tracking flags
       _receivedReg64 = false;
+      _awaitingConfigRegsResponse = false;
+      _awaitingReg64Response = false;
       // Reset all values to defaults (don't use 'Wait...' for dropdowns as it causes assertion error)
       _levelChkEna = 'No';
       _votingChkEna = 'No';
@@ -264,11 +272,12 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       _sensitivity = '0.5';
       _sel420SteamMode = 'No';
       _lastRmtAdr = 0;
-      _interlockControlEnable = 'No';
+      _groundConnectionNumber = 0;
       _interlockControlChannel = 0;
       _sysFltTimeDelay = 0;
       // Reset text controllers
       _controllers['lastRmtAdr']!.text = '0';
+      _controllers['interlockControlEnable']!.text = '0';
       _controllers['interlockControlChannel']!.text = '0';
       _controllers['sysFltTimeDelay']!.text = '0';
     });
@@ -301,10 +310,12 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     await Future.delayed(const Duration(milliseconds: 100));
     
     // Read registers 9-12 (4 registers) for config fields
+    _awaitingConfigRegsResponse = true;
     await widget.bleManager.readRegisters(startRegister: 9, quantity: 4);
     await Future.delayed(const Duration(milliseconds: 500));
     
     // Read register 64 (FIELD_63)
+    _awaitingReg64Response = true;
     await widget.bleManager.readRegisters(startRegister: 64, quantity: 1);
     
     // Set up timeout handler with cancellable timer
@@ -363,7 +374,8 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       try {
         final f9_0 = (_contDisable == 'Yes') ? 1 : 0;
         final f9_1 = (_shortDisableSys == 'Yes') ? 1 : 0;
-        final f9_2 = (_fltDisable == 'Yes') ? 1 : 0;
+        final previousReg10 = _registerData[10] ?? 0;
+        final f9_2 = (previousReg10 >> 4) & 0xF; // Preserve SYS FLT DISABLE as previous value
         final f9_3 = (_procFltDisable == 'Yes') ? 1 : 0;
         registerWrites[10] = (f9_0 << 12) | (f9_1 << 8) | (f9_2 << 4) | f9_3;
       } catch (e) {
@@ -399,14 +411,20 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         return;
       }
 
-      // Build FIELD_11 (Register 12) - Interlock Control
+      // Build FIELD_11 (Register 12) - Ground connection number + interlock channel
       try {
-        final interlockEnable = (_interlockControlEnable == 'Yes') ? 1 : 0;
+        final groundConnectionNumber = int.parse(_controllers['interlockControlEnable']!.text.trim());
         final interlockChannel = int.parse(_controllers['interlockControlChannel']!.text.trim());
-        registerWrites[12] = (interlockEnable << 8) | interlockChannel;
+
+        if (groundConnectionNumber < 0 || groundConnectionNumber > 255 ||
+            interlockChannel < 0 || interlockChannel > 255) {
+          throw Exception('Out of range');
+        }
+
+        registerWrites[12] = ((groundConnectionNumber & 0xFF) << 8) | (interlockChannel & 0xFF);
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invalid value in Interlock Control')),
+          const SnackBar(content: Text('Invalid value in Ground Connection Number / Total Channel Number')),
         );
         setState(() => _isWriting = false);
         return;
@@ -421,6 +439,44 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       ];
       await widget.bleManager.writeRegisters(startRegister: 9, values: values9to12);
       await Future.delayed(const Duration(milliseconds: 200));
+
+      // Also write FIELD_12-14 (Registers 13-15) based on selected sensitivity
+      // 0.5 -> Reg13=655, Reg14=651, Reg15=40
+      // 1   -> Reg13=665, Reg14=661, Reg15=40
+      // 2   -> Reg13=420, Reg14=415, Reg15=40
+      try {
+        int reg13Value;
+        int reg14Value;
+
+        if (_sensitivity == '0.5') {
+          reg13Value = 655;
+          reg14Value = 651;
+        } else if (_sensitivity == '1') {
+          reg13Value = 665;
+          reg14Value = 660;
+        } else {
+          reg13Value = 420;
+          reg14Value = 415;
+        }
+
+        const reg15Value = 40;
+
+        await widget.bleManager.writeRegisters(
+          startRegister: 13,
+          values: [reg13Value, reg14Value, reg15Value],
+        );
+        await Future.delayed(const Duration(milliseconds: 200));
+
+        _registerData[13] = reg13Value;
+        _registerData[14] = reg14Value;
+        _registerData[15] = reg15Value;
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to write sensitivity-linked values to Reg 13-15')),
+        );
+        setState(() => _isWriting = false);
+        return;
+      }
       
       // Build FIELD_63 (Register 64) - write only lower 12 bits (last 3 hex digits)
       // Preserve the upper 4 bits from the original register value
@@ -429,6 +485,9 @@ class _ConfigFragmentState extends State<ConfigFragment> {
         final originalReg64 = _registerData[64] ?? 0;
         final upperNibble = originalReg64 & 0xF000;  // Preserve upper 4 bits
         registerWrites[64] = upperNibble | (decValue & 0xFFF);  // Combine upper 4 bits + lower 12 bits
+        _registerData[64] = registerWrites[64]!;
+        _sysFltTimeDelay = registerWrites[64]! & 0xFFF;
+        _controllers['sysFltTimeDelay']!.text = _sysFltTimeDelay.toString();
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Invalid value in System Fault Time Delay')),
@@ -887,10 +946,6 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                         setState(() => _shortDisableSys = value!);
                       }, color: const Color(0xFFFF6B35)),
                       const SizedBox(height: 8),
-                      _buildDropdownItem('SYS FLT DISABLE', _fltDisable, (value) {
-                        setState(() => _fltDisable = value!);
-                      }, color: const Color(0xFFFF6B35)),
-                      const SizedBox(height: 8),
                       _buildDropdownItem('PROC FLT DISABLE', _procFltDisable, (value) {
                         setState(() => _procFltDisable = value!);
                       }, color: const Color(0xFFFF6B35)),
@@ -935,11 +990,9 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                           ),
                         ),
                       ),
-                      _buildDropdownItem('INTERLOCK CONTROL ENABLE', _interlockControlEnable, (value) {
-                        setState(() => _interlockControlEnable = value!);
-                      }, color: const Color(0xFFFFEB3B)),
+                      _buildConfigItem('GROUND CONNECTION NUMBER', 'interlockControlEnable', color: const Color(0xFFFFEB3B)),
                       const SizedBox(height: 8),
-                      _buildConfigItem('INTERLOCK CONTROL CHANNEL', 'interlockControlChannel', color: const Color(0xFFFFEB3B)),
+                      _buildConfigItem('TOTAL CHANNEL NUMBER', 'interlockControlChannel', color: const Color(0xFFFFEB3B)),
                       
                       const SizedBox(height: 20),
                       

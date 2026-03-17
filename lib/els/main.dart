@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
@@ -73,7 +74,7 @@ enum ActivationStatus {
 // ─────────────────────────────────────────────────────────────
 class BLEManager extends ChangeNotifier {
   // Same URL as Java postToHmacApi
-  static const String hmacApiUrl   = 'https://levelstate-server-flask.onrender.com/hmac';
+  static const String hmacApiUrl   = 'https://hls-fv20.onrender.com/hmac';
 
   // ── BLE connection objects ──────────────────────────────────
   BluetoothDevice?           _device;
@@ -147,6 +148,8 @@ class BLEManager extends ChangeNotifier {
 
   Future<void> disconnectManual() async {
     stopLEDPolling();
+    _clearLEDRegisters();
+    notifyListeners();
     await _device?.disconnect();
   }
   
@@ -236,6 +239,7 @@ class BLEManager extends ChangeNotifier {
           _notifyChar      = null;
           _notifySub?.cancel();
           stopLEDPolling();
+          _clearLEDRegisters();
           // Cancel any pending activation read
           _pendingCompleter?.completeError('disconnected');
           _pendingCompleter = null;
@@ -413,6 +417,7 @@ class BLEManager extends ChangeNotifier {
         body: jsonEncode({
           'hex': swapped,
           'location': "https://www.google.com/maps/search/?api=1&query="+location,
+          // 'bluetooth_name': "ble-1"
         }),
       ).timeout(const Duration(seconds: 20));
 
@@ -518,6 +523,10 @@ class BLEManager extends ChangeNotifier {
     _sendFrame(
         _buildReadFrame(slave: 0xF7, start: 4, qty: 10),
         logTX: false);
+  }
+
+  void _clearLEDRegisters() {
+    ledRegisters = List.filled(10, 0);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -779,6 +788,8 @@ class _MainScreenState extends State<MainScreen> {
   final BLEManager _ble = BLEManager();
   int _selectedTab = 0;
   bool _isSaved = false;
+  bool _wasConnected = false;
+  bool _isDisconnectDialogVisible = false;
 
   @override
   void initState() {
@@ -809,8 +820,125 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _onBLEUpdate() {
+    if (_wasConnected && !_ble.isConnected && !_isDisconnectDialogVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showDisconnectDialog();
+        }
+      });
+    }
+    _wasConnected = _ble.isConnected;
     _syncPolling();
     setState(() {});
+  }
+
+  Future<void> _showDisconnectDialog() async {
+    if (_isDisconnectDialogVisible) return;
+    _isDisconnectDialogVisible = true;
+
+    bool isReconnecting = false;
+    String errorMessage = '';
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return PopScope(
+          canPop: false,
+          child: StatefulBuilder(
+            builder: (context, setDialogState) {
+              return AlertDialog(
+                backgroundColor: const Color(0xFF1A1A2E),
+                title: const Text(
+                  'Device Disconnected',
+                  style: TextStyle(color: Colors.white),
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'The Bluetooth connection was lost.',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                    if (isReconnecting) ...[
+                      const SizedBox(height: 14),
+                      const Row(
+                        children: [
+                          SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 10),
+                          Text(
+                            'Reconnecting...',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (errorMessage.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        errorMessage,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
+                    ],
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isReconnecting
+                        ? null
+                        : () async {
+                            final targetDevice = _ble._device;
+                            if (targetDevice == null) {
+                              setDialogState(() {
+                                errorMessage = 'Device not found';
+                              });
+                              return;
+                            }
+
+                            setDialogState(() {
+                              isReconnecting = true;
+                              errorMessage = '';
+                            });
+
+                            await _ble.connectToDevice(targetDevice);
+
+                            if (!mounted) return;
+
+                            if (_ble.isConnected) {
+                              if (Navigator.of(dialogContext).canPop()) {
+                                Navigator.of(dialogContext).pop();
+                              }
+                            } else {
+                              setDialogState(() {
+                                isReconnecting = false;
+                                errorMessage = 'Device not found';
+                              });
+                            }
+                          },
+                    child: const Text('Reconnect'),
+                  ),
+                  TextButton(
+                    onPressed: isReconnecting
+                        ? null
+                        : () {
+                            SystemNavigator.pop();
+                          },
+                    child: const Text('Exit'),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    _isDisconnectDialogVisible = false;
   }
 
   Future<void> _toggleSaveDevice() async {

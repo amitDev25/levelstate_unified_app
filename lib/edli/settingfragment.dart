@@ -170,8 +170,15 @@ class _SettingFragmentState extends State<SettingFragment> {
         channelSettings.tripRelayCtrl.text = channelSettings.tripRelayNumber.toString();
       }
       
-      // Parse FIELD_(63+i) from Register (64+i)
-      final energisedReg = 63 + i + 1;  // field+1
+      // Parse energised/delay using Trip Relay mapping.
+      // If trip relay is valid (1.._totalChannels), use Register (64+tripRelay).
+      // Fallback to channel-indexed register for compatibility when trip relay is 0/invalid.
+      int energisedReg = 63 + i + 1;  // default fallback: register 64+i
+      if (channelSettings.tripRelayNumber > 0 &&
+          channelSettings.tripRelayNumber <= _totalChannels) {
+        energisedReg = 64 + channelSettings.tripRelayNumber;
+      }
+
       if (_registerData.containsKey(energisedReg)) {
         final regVal = _registerData[energisedReg]!;
         // Bit-packed: [energised(1 nibble)][delay(3 nibbles)]
@@ -312,7 +319,7 @@ class _SettingFragmentState extends State<SettingFragment> {
     try {
       // Prepare register writes for each channel
       final channelSettingsWrites = <int, int>{};
-      final energisedDelayWrites = <int, int>{};
+      final relayDelayWrites = <int, int>{};
 
       for (final channel in _channels) {
         final channelNum = channel.channelNumber;
@@ -333,13 +340,29 @@ class _SettingFragmentState extends State<SettingFragment> {
           return;
         }
 
-        // Build energised/delay register (FIELD_(63+channelNum) → Register (64+channelNum))
+        // Build energised/delay register by TRIP RELAY number
+        // (FIELD_(63+tripRelay) → Register (64+tripRelay))
         try {
           final energisedVal = int.parse(channel.energisedCtrl.text.trim());
           final delayVal = int.parse(channel.delayCtrl.text.trim());
-          
-          final energisedReg = 63 + channelNum + 1;  // field+1
-          energisedDelayWrites[energisedReg] = (energisedVal << 12) | (delayVal & 0xFFF);
+          final tripRelay = int.parse(channel.tripRelayCtrl.text.trim());
+
+          if (tripRelay < 0 || tripRelay > _totalChannels) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Invalid Trip Relay $tripRelay in Channel $channelNum')),
+            );
+            setState(() => _isWriting = false);
+            return;
+          }
+
+          // Trip Relay 0 is valid: keep channel trip relay as 0,
+          // but do not map delay to any relay register.
+          if (tripRelay == 0) {
+            continue;
+          }
+
+          final relayReg = 64 + tripRelay; // register index for relay-based delay
+          relayDelayWrites[relayReg] = (energisedVal << 12) | (delayVal & 0xFFF);
         } catch (e) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Invalid value in Channel $channelNum energised/delay')),
@@ -364,18 +387,43 @@ class _SettingFragmentState extends State<SettingFragment> {
         await Future.delayed(const Duration(milliseconds: 300));
       }
       
-      // Write only the required number of energised/delay registers
-      final energisedValues = List<int>.filled(_totalChannels, 0);
-      for (int i = 0; i < _totalChannels; i++) {
-        energisedValues[i] = energisedDelayWrites[65 + i] ?? _registerData[65 + i] ?? 0;
-      }
-      
-      // Write in chunks of 4 registers to stay under BLE 20-byte limit
-      for (int i = 0; i < energisedValues.length; i += chunkSize) {
-        final end = (i + chunkSize < energisedValues.length) ? i + chunkSize : energisedValues.length;
-        final chunk = energisedValues.sublist(i, end);
-        await widget.bleManager.writeRegisters(startRegister: 65 + i, values: chunk);
+      // Write energised/delay only to mapped relay registers
+      // (more reliable than rebuilding a full 65..N block when relay mapping is sparse)
+      if (relayDelayWrites.isNotEmpty) {
+        final sortedRelayRegs = relayDelayWrites.keys.toList()..sort();
+
+        int runStart = sortedRelayRegs.first;
+        int previousReg = sortedRelayRegs.first;
+        List<int> runValues = [relayDelayWrites[sortedRelayRegs.first]!];
+
+        for (int i = 1; i < sortedRelayRegs.length; i++) {
+          final reg = sortedRelayRegs[i];
+          final value = relayDelayWrites[reg]!;
+
+          final isContiguous = reg == previousReg + 1;
+          final hasRoomInChunk = runValues.length < chunkSize;
+
+          if (isContiguous && hasRoomInChunk) {
+            runValues.add(value);
+          } else {
+            await widget.bleManager.writeRegisters(startRegister: runStart, values: runValues);
+            await Future.delayed(const Duration(milliseconds: 300));
+
+            runStart = reg;
+            runValues = [value];
+          }
+
+          previousReg = reg;
+        }
+
+        // Flush remaining run
+        await widget.bleManager.writeRegisters(startRegister: runStart, values: runValues);
         await Future.delayed(const Duration(milliseconds: 300));
+
+        // Keep local cache in sync
+        relayDelayWrites.forEach((reg, value) {
+          _registerData[reg] = value;
+        });
       }
 
       if (mounted) {

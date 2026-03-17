@@ -236,6 +236,19 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
         }
       });
     }
+
+    // If disconnected, clear LED data so stale blinking/status does not remain
+    if (_wasConnected && !isConnectedNow) {
+      setState(() {
+        _numChannels = 0;
+        _sfStatus = 0;
+        _pfStatus = 0;
+        _channelStatuses.clear();
+        _isLoading = false;
+        _isSilentRefresh = false;
+        _errorMessage = null;
+      });
+    }
     
     _wasConnected = isConnectedNow;
     _wasCheckingActivation = isCheckingActivationNow;

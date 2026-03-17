@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
@@ -834,10 +835,11 @@ class BLEManager extends ChangeNotifier {
       notifyListeners();
       
       final response = await http.post(
-        Uri.parse('https://levelstate-server-flask.onrender.com/hmac'),
+        Uri.parse('https://hls-fv20.onrender.com/hmac'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'hex': deviceHexData,
+          // 'bluetooth_name': "ble-1",
           'location': 'https://www.google.com/maps/search/?api=1&query=$location',
         }),
       ).timeout(const Duration(seconds: 20));
@@ -1330,6 +1332,8 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
   late TabController _tabController;
   bool _isSaved = false;
   bool _bannerDismissed = false;
+  bool _wasConnected = false;
+  bool _isDisconnectDialogVisible = false;
 
   @override
   void initState() {
@@ -1363,12 +1367,132 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
 
   void _onUpdate() {
     if (!mounted) return;
+
+    if (_wasConnected && !_ble.isConnected && !_isDisconnectDialogVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _showDisconnectDialog();
+        }
+      });
+    }
+
+    _wasConnected = _ble.isConnected;
+
     setState(() {
       // Reset banner dismissal when device is activated or disconnected
       if (_ble.isDeviceActivated || !_ble.isConnected) {
         _bannerDismissed = false;
       }
     });
+  }
+
+  Future<void> _showDisconnectDialog() async {
+    if (_isDisconnectDialogVisible) return;
+    _isDisconnectDialogVisible = true;
+
+    bool isReconnecting = false;
+    String errorMessage = '';
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return PopScope(
+          canPop: false,
+          child: StatefulBuilder(
+            builder: (context, setDialogState) {
+              return AlertDialog(
+                backgroundColor: const Color(0xFF1A1A2E),
+                title: const Text(
+                  'Device Disconnected',
+                  style: TextStyle(color: Colors.white),
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'The Bluetooth connection was lost.',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                    if (isReconnecting) ...[
+                      const SizedBox(height: 14),
+                      const Row(
+                        children: [
+                          SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(width: 10),
+                          Text(
+                            'Reconnecting...',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (errorMessage.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        errorMessage,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
+                    ],
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isReconnecting
+                        ? null
+                        : () async {
+                            final targetDevice = _ble._device;
+                            if (targetDevice == null) {
+                              setDialogState(() {
+                                errorMessage = 'Device not found';
+                              });
+                              return;
+                            }
+
+                            setDialogState(() {
+                              isReconnecting = true;
+                              errorMessage = '';
+                            });
+
+                            await _ble.connectToDevice(targetDevice);
+
+                            if (!mounted) return;
+
+                            if (_ble.isConnected) {
+                              if (Navigator.of(dialogContext).canPop()) {
+                                Navigator.of(dialogContext).pop();
+                              }
+                            } else {
+                              setDialogState(() {
+                                isReconnecting = false;
+                                errorMessage = 'Device not found';
+                              });
+                            }
+                          },
+                    child: const Text('Reconnect'),
+                  ),
+                  TextButton(
+                    onPressed: isReconnecting
+                        ? null
+                        : () {
+                            SystemNavigator.pop();
+                          },
+                    child: const Text('Exit'),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    _isDisconnectDialogVisible = false;
   }
 
   Future<void> _toggleSaveDevice() async {
