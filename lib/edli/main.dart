@@ -835,11 +835,11 @@ class BLEManager extends ChangeNotifier {
       notifyListeners();
       
       final response = await http.post(
-        Uri.parse('https://hls-fv20.onrender.com/hmac'),
+        Uri.parse('https://levelstate-server-flask.onrender.com/hmac'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'hex': deviceHexData,
-          // 'bluetooth_name': "ble-1",
+          'device_id': deviceHexData,
+          'bluetooth_name': (_device?.remoteId.toString() ?? 'unknown'),
           'location': 'https://www.google.com/maps/search/?api=1&query=$location',
         }),
       ).timeout(const Duration(seconds: 20));
