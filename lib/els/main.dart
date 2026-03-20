@@ -941,6 +941,119 @@ class _MainScreenState extends State<MainScreen> {
     _isDisconnectDialogVisible = false;
   }
 
+  Future<bool> _isInternetAvailable() async {
+    try {
+      final response = await http
+          .get(Uri.parse('https://www.google.com/generate_204'))
+          .timeout(const Duration(seconds: 5));
+      return response.statusCode == 204 || response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _showLocationRequiredDialog() async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Text(
+            'Location Required',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: const Text(
+            'Please turn on Location and allow location permission to activate the device.',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _handleActivatePressed();
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showInternetRequiredDialog() async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Text(
+            'Internet Required',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: const Text(
+            'Please turn on internet connection to activate the device.',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _handleActivatePressed();
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<bool> _ensureActivationRequirements() async {
+    final locationEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!locationEnabled) {
+      await _showLocationRequiredDialog();
+      return false;
+    }
+
+    var permission = await Permission.location.status;
+    if (!permission.isGranted) {
+      permission = await Permission.location.request();
+      if (!permission.isGranted) {
+        await _showLocationRequiredDialog();
+        return false;
+      }
+    }
+
+    final internetAvailable = await _isInternetAvailable();
+    if (!internetAvailable) {
+      await _showInternetRequiredDialog();
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _handleActivatePressed() async {
+    if (_ble.activationStatus == ActivationStatus.activating) return;
+    final ready = await _ensureActivationRequirements();
+    if (!ready) return;
+    await _ble.activateDevice();
+  }
+
   Future<void> _toggleSaveDevice() async {
     if (_isSaved) {
       // Unsave the device
@@ -1011,7 +1124,11 @@ class _MainScreenState extends State<MainScreen> {
             child: _buildBody(),
           ),
         ),
-        if (isLocked) _ActivationGate(ble: _ble),
+        if (isLocked)
+          _ActivationGate(
+            ble: _ble,
+            onActivatePressed: _handleActivatePressed,
+          ),
       ]),
       bottomNavigationBar: isLocked ? null : _buildBottomNav(),
     );
@@ -1094,7 +1211,12 @@ class _MainScreenState extends State<MainScreen> {
 // ─────────────────────────────────────────────────────────────
 class _ActivationGate extends StatelessWidget {
   final BLEManager ble;
-  const _ActivationGate({required this.ble});
+  final Future<void> Function() onActivatePressed;
+
+  const _ActivationGate({
+    required this.ble,
+    required this.onActivatePressed,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1172,7 +1294,7 @@ class _ActivationGate extends StatelessWidget {
 
               // Activate button — mirrors Java btnActivate.setOnClickListener
               ElevatedButton.icon(
-                onPressed: ble.activateDevice,
+                onPressed: isActivating ? null : onActivatePressed,
                 icon:  const Icon(Icons.bolt_rounded, color: Colors.black),
                 label: const Text('Activate',
                     style: TextStyle(

@@ -1578,6 +1578,119 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
     }
   }
 
+  Future<bool> _isInternetAvailable() async {
+    try {
+      final response = await http
+          .get(Uri.parse('https://www.google.com/generate_204'))
+          .timeout(const Duration(seconds: 5));
+      return response.statusCode == 204 || response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _showLocationRequiredDialog() async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Text(
+            'Location Required',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: const Text(
+            'Please turn on Location and allow location permission to activate the device.',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _handleActivatePressed();
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showInternetRequiredDialog() async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Text(
+            'Internet Required',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: const Text(
+            'Please turn on internet connection to activate the device.',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _handleActivatePressed();
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<bool> _ensureActivationRequirements() async {
+    final locationEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!locationEnabled) {
+      await _showLocationRequiredDialog();
+      return false;
+    }
+
+    var permission = await Permission.location.status;
+    if (!permission.isGranted) {
+      permission = await Permission.location.request();
+      if (!permission.isGranted) {
+        await _showLocationRequiredDialog();
+        return false;
+      }
+    }
+
+    final internetAvailable = await _isInternetAvailable();
+    if (!internetAvailable) {
+      await _showInternetRequiredDialog();
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _handleActivatePressed() async {
+    if (_ble.isActivating) return;
+    final ready = await _ensureActivationRequirements();
+    if (!ready) return;
+    await _ble.completeActivation();
+  }
+
   Future<void> _showBluetoothOffDialog({required Future<void> Function() onTryAgain}) async {
     if (!mounted) return;
 
@@ -1944,7 +2057,11 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                     deviceDisplayName: widget.deviceDisplayName,
                   ),
                   HomeFragment(bleManager: _ble),
-                  CustomCommandTab(ble: _ble),
+                  CustomCommandTab(
+                    ble: _ble,
+                    onActivateRequested: _handleActivatePressed,
+                  ),
+                  
                   AdminFragment(bleManager: _ble),
                   ConfigFragment(bleManager: _ble),
                   SettingFragment(bleManager: _ble),
@@ -2106,7 +2223,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                       child: ElevatedButton.icon(
                         onPressed: _ble.isActivating
                             ? null
-                            : () => _ble.completeActivation(),
+                            : _handleActivatePressed,
                         icon: _ble.isActivating
                             ? const SizedBox(
                                 width: 20,
@@ -2176,8 +2293,13 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
 // ─────────────────────────────────────────────────────────────
 class CustomCommandTab extends StatefulWidget {
   final BLEManager ble;
+  final Future<void> Function() onActivateRequested;
   
-  const CustomCommandTab({super.key, required this.ble});
+  const CustomCommandTab({
+    super.key,
+    required this.ble,
+    required this.onActivateRequested,
+  });
 
   @override
   State<CustomCommandTab> createState() => _CustomCommandTabState();
@@ -2342,7 +2464,7 @@ class _CustomCommandTabState extends State<CustomCommandTab> {
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: widget.ble.isConnected && !widget.ble.isActivating
-                    ? () => widget.ble.completeActivation()
+                    ? widget.onActivateRequested
                     : null,
                 icon: widget.ble.isActivating
                     ? const SizedBox(
