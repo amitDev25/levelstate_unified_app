@@ -5,8 +5,14 @@ import 'main.dart';
 class LedStatusFragment extends StatefulWidget {
   final BLEManager bleManager;
   final TabController tabController;
+  final String deviceDisplayName;
 
-  const LedStatusFragment({super.key, required this.bleManager, required this.tabController});
+  const LedStatusFragment({
+    super.key,
+    required this.bleManager,
+    required this.tabController,
+    this.deviceDisplayName = 'EDLI',
+  });
 
   @override
   State<LedStatusFragment> createState() => _LedStatusFragmentState();
@@ -513,9 +519,9 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                               children: [
                                 Container(
                                   padding: const EdgeInsets.symmetric(vertical: 6),
-                                  child: const Text(
-                                    'EDLI',
-                                    style: TextStyle(
+                                  child: Text(
+                                    widget.deviceDisplayName,
+                                    style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
@@ -565,7 +571,12 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
                                               children: [
                                                 _buildTopLED('SF', _sfStatus, ledSize),
                                                 const SizedBox(width: 3),
-                                                _buildTopLED('PF', _pfStatus, ledSize, showLabel: _numChannels <= 8),
+                                                _buildTopLED(
+                                                  'PF',
+                                                  _pfStatus,
+                                                  ledSize,
+                                                  showLabel: widget.deviceDisplayName == 'ELS',
+                                                ),
                                               ],
                                             ),
                                             
@@ -686,6 +697,7 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   Widget _buildChannelRow(int channelNum, int channelStatus, double ledSize) {
     final lsb = channelStatus & 0xF;
     
+    
     bool leftOn = false;
     bool rightOn = false;
     
@@ -762,14 +774,14 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
             width: ledSize,
             height: ledSize,
             decoration: BoxDecoration(
-              color: rightOn ? Colors.red : Colors.grey[850],
+              color: rightOn ? Color(0xFFFC1303) : Colors.grey[850],
               border: Border.all(
                 color: Colors.grey[700]!,
                 width: 2,
               ),
               boxShadow: rightOn ? [
                 BoxShadow(
-                  color: Colors.red.withOpacity(0.8),
+                  color: Color(0xFFFC1303).withOpacity(0.9),
                   blurRadius: 10,
                   spreadRadius: 2,
                 ),

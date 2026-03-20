@@ -23,14 +23,22 @@ void main() {
 
 class BLEAsciiApp extends StatelessWidget {
   final BluetoothDevice? autoConnectDevice;
+  final String deviceDisplayName;
   
-  const BLEAsciiApp({super.key, this.autoConnectDevice});
+  const BLEAsciiApp({
+    super.key,
+    this.autoConnectDevice,
+    this.deviceDisplayName = 'EDLI',
+  });
   
   @override
   Widget build(BuildContext context) {
+    final effectiveDisplayName =
+        deviceDisplayName == 'ELS (8 Channel)' ? 'ELS' : deviceDisplayName;
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'EDLI',
+      title: effectiveDisplayName,
       theme: ThemeData(
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF00E5FF),
@@ -40,7 +48,10 @@ class BLEAsciiApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0D0D1A),
         useMaterial3: true,
       ),
-      home: BLETerminalScreen(autoConnectDevice: autoConnectDevice),
+      home: BLETerminalScreen(
+        autoConnectDevice: autoConnectDevice,
+        deviceDisplayName: effectiveDisplayName,
+      ),
     );
   }
 }
@@ -825,13 +836,16 @@ class BLEManager extends ChangeNotifier {
       logs.add('📍 Step 3: Getting device location...');
       notifyListeners();
       final location = await _getDeviceLocation();
+      final bluetoothName = _device?.remoteId.toString() ?? 'unknown';
       logs.add('✓ Location: $location');
+      logs.add('✓ Bluetooth Name: $bluetoothName');
       notifyListeners();
       
       // Step 4: Post to HMAC API
       logs.add('');
       logs.add('🌐 Step 4: Posting to HMAC API...');
       logs.add('  Device hex: $deviceHexData');
+
       notifyListeners();
       
       final response = await http.post(
@@ -1092,6 +1106,10 @@ class BLEManager extends ChangeNotifier {
       
       isConnected = true;
       status = 'Connected';
+      // Set checking flag immediately to avoid activation popup flicker
+      // before checkActivationOnConnect() starts.
+      isCheckingActivation = true;
+      needsActivation = false;
       logs.add('Connected successfully');
       notifyListeners();
 
@@ -1319,8 +1337,13 @@ class BLEManager extends ChangeNotifier {
 // ─────────────────────────────────────────────────────────────
 class BLETerminalScreen extends StatefulWidget {
   final BluetoothDevice? autoConnectDevice;
+  final String deviceDisplayName;
   
-  const BLETerminalScreen({super.key, this.autoConnectDevice});
+  const BLETerminalScreen({
+    super.key,
+    this.autoConnectDevice,
+    this.deviceDisplayName = 'EDLI',
+  });
   
   @override
   State<BLETerminalScreen> createState() => _BLETerminalScreenState();
@@ -1516,9 +1539,9 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
         await DevicePreferences.saveDevice(
           deviceType: 'EDLI',
           deviceId: _ble._device!.remoteId.toString(),
-          deviceName: _ble._device!.platformName.isNotEmpty 
-              ? _ble._device!.platformName 
-              : 'EDLI Device',
+          deviceName: widget.deviceDisplayName == 'ELS'
+              ? 'ELS (8 Channel)'
+              : widget.deviceDisplayName,
         );
         setState(() {
           _isSaved = true;
@@ -1533,6 +1556,64 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
         }
       }
     }
+  }
+
+  Future<bool> _isBluetoothOn() async {
+    try {
+      final state = await FlutterBluePlus.adapterState.first.timeout(
+        const Duration(seconds: 2),
+      );
+      return state != BluetoothAdapterState.off;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  Future<void> _showBluetoothOffDialog({required Future<void> Function() onTryAgain}) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1A1A2E),
+          title: const Text(
+            'Bluetooth Required',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: const Text(
+            'Please turn on Bluetooth.',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+              },
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await onTryAgain();
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _onConnectPressed() async {
+    final bluetoothOn = await _isBluetoothOn();
+    if (!bluetoothOn) {
+      await _showBluetoothOffDialog(onTryAgain: _onConnectPressed);
+      return;
+    }
+
+    await _showDeviceSelectionDialog();
   }
 
   Future<void> _showDeviceSelectionDialog() async {
@@ -1673,6 +1754,20 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
               ),
               TextButton(
                 onPressed: () async {
+                  final bluetoothOn = await _isBluetoothOn();
+                  if (!bluetoothOn) {
+                    await _showBluetoothOffDialog(
+                      onTryAgain: () async {
+                        if (!mounted) return;
+                        setDialogState(() {
+                          _ble.availableDevices.clear();
+                        });
+                        await _ble.startScan();
+                      },
+                    );
+                    return;
+                  }
+
                   setDialogState(() {
                     _ble.availableDevices.clear();
                   });
@@ -1690,7 +1785,18 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
     );
     
     // Start scanning after showing dialog
-    await _ble.startScan();
+    try {
+      await _ble.startScan();
+    } catch (e) {
+      final error = e.toString().toLowerCase();
+      if (error.contains('off') || error.contains('disabled') || error.contains('bluetooth')) {
+        await _showBluetoothOffDialog(onTryAgain: _onConnectPressed);
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Scan failed: $e')),
+        );
+      }
+    }
   }
 
   @override
@@ -1712,9 +1818,9 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
             ),
             child: Row(
               children: [
-                const Text(
-                  'EDLI',
-                  style: TextStyle(
+                Text(
+                  widget.deviceDisplayName,
+                  style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
@@ -1750,7 +1856,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                 const SizedBox(width: 12),
                 // Connect/Disconnect button
                 GestureDetector(
-                  onTap: _ble.isConnected ? _ble.disconnect : _showDeviceSelectionDialog,
+                  onTap: _ble.isConnected ? _ble.disconnect : _onConnectPressed,
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
@@ -1821,7 +1927,11 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
             child: TabBarView(
                 controller: _tabController,
                 children: [
-                  LedStatusFragment(bleManager: _ble, tabController: _tabController),
+                  LedStatusFragment(
+                    bleManager: _ble,
+                    tabController: _tabController,
+                    deviceDisplayName: widget.deviceDisplayName,
+                  ),
                   HomeFragment(bleManager: _ble),
                   CustomCommandTab(ble: _ble),
                   AdminFragment(bleManager: _ble),

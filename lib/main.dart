@@ -45,9 +45,17 @@ class DeviceSelectionScreen extends StatefulWidget {
 
 class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
   String? selectedDevice;
+  String _selectedEdliVariant = 'EDLI';
   bool _isCheckingPreferences = true;
   bool _hasSavedDevice = false;
   Map<String, String?> _savedDeviceInfo = {};
+
+  String _resolveEdliVariant(String? savedName) {
+    if (savedName == 'EDLI' || savedName == 'ELS (8 Channel)') {
+      return savedName!;
+    }
+    return 'EDLI';
+  }
 
   @override
   void initState() {
@@ -137,7 +145,11 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
         // Navigate to the appropriate app with the device
         Widget targetScreen;
         if (deviceType == 'EDLI') {
-          targetScreen = edli.BLEAsciiApp(autoConnectDevice: targetDevice);
+          final edliVariant = _resolveEdliVariant(_savedDeviceInfo['name']);
+          targetScreen = edli.BLEAsciiApp(
+            autoConnectDevice: targetDevice,
+            deviceDisplayName: edliVariant,
+          );
         } else {
           targetScreen = els.HMSoftApp(autoConnectDevice: targetDevice);
         }
@@ -182,7 +194,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
     Widget targetScreen;
     if (selectedDevice == 'EDLI') {
-      targetScreen = const edli.BLEAsciiApp();
+      targetScreen = edli.BLEAsciiApp(deviceDisplayName: _selectedEdliVariant);
     } else {
       targetScreen = const els.HMSoftApp();
     }
@@ -244,12 +256,15 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
           ),
         ),
         child: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                padding: const EdgeInsets.all(24.0),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: constraints.maxHeight - 48),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
                   // Title
                   const Icon(
                     Icons.devices,
@@ -277,7 +292,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
                   // EDLI Option
                   _DeviceOptionCard(
-                    title: 'EDLI',
+                    title: 'EDLI / ELS',
                     description: 'EDLI Device',
                     icon: Icons.bluetooth,
                     isSelected: selectedDevice == 'EDLI',
@@ -287,6 +302,56 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                       });
                     },
                   ),
+                  if (selectedDevice == 'EDLI') ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A2E),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Select EDLI Profile',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          RadioListTile<String>(
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            activeColor: const Color(0xFF00E5FF),
+                            title: const Text('EDLI', style: TextStyle(color: Colors.white)),
+                            value: 'EDLI',
+                            groupValue: _selectedEdliVariant,
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _selectedEdliVariant = value);
+                            },
+                          ),
+                          RadioListTile<String>(
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            activeColor: const Color(0xFF00E5FF),
+                            title: const Text('ELS (8 Channel)', style: TextStyle(color: Colors.white)),
+                            value: 'ELS (8 Channel)',
+                            groupValue: _selectedEdliVariant,
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _selectedEdliVariant = value);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 20),
 
                   // ELS Option
@@ -329,9 +394,11 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                       ),
                     ),
                   ),
-                ],
-              ),
-            ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -340,6 +407,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
   Widget _buildSavedDevicePage() {
     final deviceType = _savedDeviceInfo['type'] ?? 'Unknown';
+    final displayDeviceType = deviceType == 'EDLI' ? 'EDLI / ELS' : deviceType;
     final deviceName = _savedDeviceInfo['name'] ?? 'Unknown Device';
     final deviceId = _savedDeviceInfo['id'] ?? 'Unknown';
 
@@ -423,7 +491,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                             ),
                             const SizedBox(width: 12),
                             Text(
-                              deviceType,
+                              displayDeviceType,
                               style: const TextStyle(
                                 fontSize: 24,
                                 fontWeight: FontWeight.bold,

@@ -716,6 +716,9 @@ class _SettingFragmentState extends State<SettingFragment> {
   }
 
   Widget _buildChannelCard(ChannelSettings channel) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final bool compact = screenWidth < 380;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(16),
@@ -790,33 +793,37 @@ class _SettingFragmentState extends State<SettingFragment> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             crossAxisCount: 2,
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
-            childAspectRatio: 1.7,
+            mainAxisSpacing: compact ? 8 : 10,
+            crossAxisSpacing: compact ? 8 : 10,
+            childAspectRatio: compact ? 1.35 : 1.7,
             children: [
               _buildSteamToggleTile(
                 'Type',
                 channel,
                 Colors.orange,
                 channel.enabled,
+                compact: compact,
               ),
               _buildEditablePropertyTile(
                 'Trip Relay',
                 channel.tripRelayCtrl,
                 const Color(0xFFFF6B35),
                 channel.enabled,
+                compact: compact,
               ),
               _buildEnergisedToggleTile(
                 'Status',
                 channel,
                 Colors.green,
                 channel.enabled,
+                compact: compact,
               ),
               _buildEditablePropertyTile(
                 'Delay',
                 channel.delayCtrl,
                 const Color(0xFFFFEB3B),
                 channel.enabled,
+                compact: compact,
               ),
             ],
           ),
@@ -825,12 +832,12 @@ class _SettingFragmentState extends State<SettingFragment> {
     );
   }
 
-  Widget _buildSteamToggleTile(
-      String label, ChannelSettings channel, Color color, bool enabled) {
+    Widget _buildSteamToggleTile(
+      String label, ChannelSettings channel, Color color, bool enabled, {bool compact = false}) {
     final isSteam = channel.steamCtrl.text == '1';
     
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10, vertical: compact ? 6 : 8),
       decoration: BoxDecoration(
         color: const Color(0xFF0D0D1A),
         borderRadius: BorderRadius.circular(8),
@@ -846,14 +853,14 @@ class _SettingFragmentState extends State<SettingFragment> {
             label,
             style: TextStyle(
               color: enabled ? Colors.white54 : Colors.white24,
-              fontSize: 10,
+              fontSize: compact ? 9 : 10,
             ),
           ),
-          const SizedBox(height: 4),
+          SizedBox(height: compact ? 2 : 4),
           Row(
             children: [
               Transform.scale(
-                scale: 0.8,
+                scale: compact ? 0.68 : 0.8,
                 child: Switch(
                   value: isSteam,
                   onChanged: enabled ? (value) {
@@ -868,13 +875,13 @@ class _SettingFragmentState extends State<SettingFragment> {
                   inactiveTrackColor: Colors.blue.withOpacity(0.3),
                 ),
               ),
-              const SizedBox(width: 4),
+              SizedBox(width: compact ? 2 : 4),
               Expanded(
                 child: Text(
                   isSteam ? 'Steam' : 'Water',
                   style: TextStyle(
                     color: enabled ? color : color.withOpacity(0.3),
-                    fontSize: 13,
+                    fontSize: compact ? 11 : 13,
                     fontWeight: FontWeight.bold,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -887,12 +894,12 @@ class _SettingFragmentState extends State<SettingFragment> {
     );
   }
 
-  Widget _buildEnergisedToggleTile(
-      String label, ChannelSettings channel, Color color, bool enabled) {
+    Widget _buildEnergisedToggleTile(
+      String label, ChannelSettings channel, Color color, bool enabled, {bool compact = false}) {
     final isEnergised = channel.energisedCtrl.text == '1';
     
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10, vertical: compact ? 6 : 8),
       decoration: BoxDecoration(
         color: const Color(0xFF0D0D1A),
         borderRadius: BorderRadius.circular(8),
@@ -908,14 +915,14 @@ class _SettingFragmentState extends State<SettingFragment> {
             label,
             style: TextStyle(
               color: enabled ? Colors.white54 : Colors.white24,
-              fontSize: 10,
+              fontSize: compact ? 9 : 10,
             ),
           ),
-          const SizedBox(height: 4),
+          SizedBox(height: compact ? 2 : 4),
           Row(
             children: [
               Transform.scale(
-                scale: 0.8,
+                scale: compact ? 0.68 : 0.8,
                 child: Switch(
                   value: isEnergised,
                   onChanged: enabled ? (value) {
@@ -930,13 +937,13 @@ class _SettingFragmentState extends State<SettingFragment> {
                   inactiveTrackColor: Colors.grey.withOpacity(0.3),
                 ),
               ),
-              const SizedBox(width: 4),
+              SizedBox(width: compact ? 2 : 4),
               Expanded(
                 child: Text(
                   isEnergised ? 'Energised' : 'De-energised',
                   style: TextStyle(
                     color: enabled ? color : color.withOpacity(0.3),
-                    fontSize: 12,
+                    fontSize: compact ? 10 : 12,
                     fontWeight: FontWeight.bold,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -950,9 +957,9 @@ class _SettingFragmentState extends State<SettingFragment> {
   }
 
   Widget _buildEditablePropertyTile(
-      String label, TextEditingController controller, Color color, bool enabled) {
+      String label, TextEditingController controller, Color color, bool enabled, {bool compact = false}) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10, vertical: compact ? 6 : 8),
       decoration: BoxDecoration(
         color: const Color(0xFF0D0D1A),
         borderRadius: BorderRadius.circular(8),
@@ -968,10 +975,10 @@ class _SettingFragmentState extends State<SettingFragment> {
             label,
             style: TextStyle(
               color: enabled ? Colors.white54 : Colors.white24,
-              fontSize: 10,
+              fontSize: compact ? 9 : 10,
             ),
           ),
-          const SizedBox(height: 2),
+          SizedBox(height: compact ? 1 : 2),
           Row(
             children: [
               // Minus button
@@ -991,19 +998,19 @@ class _SettingFragmentState extends State<SettingFragment> {
                   });
                 } : null,
                 child: Container(
-                  padding: const EdgeInsets.all(4),
+                  padding: EdgeInsets.all(compact ? 3 : 4),
                   decoration: BoxDecoration(
                     color: enabled ? color.withOpacity(0.2) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Icon(
                     Icons.remove,
-                    size: 16,
+                    size: compact ? 14 : 16,
                     color: enabled ? color : color.withOpacity(0.3),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: compact ? 4 : 8),
               // Text field
               Expanded(
                 child: TextField(
@@ -1013,7 +1020,7 @@ class _SettingFragmentState extends State<SettingFragment> {
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: enabled ? color : color.withOpacity(0.3),
-                    fontSize: 14,
+                    fontSize: compact ? 12 : 14,
                     fontWeight: FontWeight.bold,
                   ),
                   decoration: const InputDecoration(
@@ -1023,7 +1030,7 @@ class _SettingFragmentState extends State<SettingFragment> {
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: compact ? 4 : 8),
               // Plus button
               InkWell(
                 onTap: enabled ? () {
@@ -1033,14 +1040,14 @@ class _SettingFragmentState extends State<SettingFragment> {
                   });
                 } : null,
                 child: Container(
-                  padding: const EdgeInsets.all(4),
+                  padding: EdgeInsets.all(compact ? 3 : 4),
                   decoration: BoxDecoration(
                     color: enabled ? color.withOpacity(0.2) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Icon(
                     Icons.add,
-                    size: 16,
+                    size: compact ? 14 : 16,
                     color: enabled ? color : color.withOpacity(0.3),
                   ),
                 ),

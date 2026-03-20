@@ -415,9 +415,9 @@ class BLEManager extends ChangeNotifier {
         Uri.parse(hmacApiUrl),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'hex': swapped,
+          'device_id': swapped,
+          'bluetooth_name': (_device?.remoteId.toString() ?? 'unknown'),
           'location': "https://www.google.com/maps/search/?api=1&query="+location,
-          // 'bluetooth_name': "ble-1"
         }),
       ).timeout(const Duration(seconds: 20));
 
