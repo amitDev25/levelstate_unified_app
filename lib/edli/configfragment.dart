@@ -26,6 +26,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
   // FIELD_10 (Register 11)
   String _pwrFltDisable = 'No';  // No means enabled (not disabled)
   String _sensitivity = '0.5';  // Dropdown: 0.5, 1, 2 (writes 1, 2, 3 respectively)
+  bool _enableSensitivityWrite = false;
   String _sel420SteamMode = 'No';
   int _lastRmtAdr = 0;
   
@@ -389,15 +390,19 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       // Build FIELD_10 (Register 11) - bit-packed nibbles
       try {
         final f10_0 = (_pwrFltDisable == 'Yes') ? 1 : 0;
+        final previousReg11 = _registerData[11] ?? 0;
         
         // Map display values to register values: 0.5→1, 1→2, 2→3
-        int sensRegValue = 1;
-        if (_sensitivity == '0.5') {
-          sensRegValue = 1;
-        } else if (_sensitivity == '1') {
-          sensRegValue = 2;
-        } else if (_sensitivity == '2') {
-          sensRegValue = 3;
+        // If sensitivity write is disabled, preserve existing sensitivity nibble.
+        int sensRegValue = (previousReg11 >> 8) & 0xF;
+        if (_enableSensitivityWrite) {
+          if (_sensitivity == '0.5') {
+            sensRegValue = 1;
+          } else if (_sensitivity == '1') {
+            sensRegValue = 2;
+          } else if (_sensitivity == '2') {
+            sensRegValue = 3;
+          }
         }
         
         final f10_2 = (_sel420SteamMode == 'Yes') ? 1 : 0;
@@ -440,42 +445,44 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       await widget.bleManager.writeRegisters(startRegister: 9, values: values9to12);
       await Future.delayed(const Duration(milliseconds: 200));
 
-      // Also write FIELD_12-14 (Registers 13-15) based on selected sensitivity
-      // 0.5 -> Reg13=655, Reg14=651, Reg15=40
-      // 1   -> Reg13=665, Reg14=661, Reg15=40
-      // 2   -> Reg13=420, Reg14=415, Reg15=40
-      try {
-        int reg13Value;
-        int reg14Value;
+      if (_enableSensitivityWrite) {
+        // Also write FIELD_12-14 (Registers 13-15) based on selected sensitivity
+        // 0.5 -> Reg13=655, Reg14=651, Reg15=40
+        // 1   -> Reg13=665, Reg14=661, Reg15=40
+        // 2   -> Reg13=420, Reg14=415, Reg15=40
+        try {
+          int reg13Value;
+          int reg14Value;
 
-        if (_sensitivity == '0.5') {
-          reg13Value = 655;
-          reg14Value = 651;
-        } else if (_sensitivity == '1') {
-          reg13Value = 665;
-          reg14Value = 660;
-        } else {
-          reg13Value = 420;
-          reg14Value = 415;
+          if (_sensitivity == '0.5') {
+            reg13Value = 655;
+            reg14Value = 651;
+          } else if (_sensitivity == '1') {
+            reg13Value = 665;
+            reg14Value = 660;
+          } else {
+            reg13Value = 420;
+            reg14Value = 415;
+          }
+
+          const reg15Value = 40;
+
+          await widget.bleManager.writeRegisters(
+            startRegister: 13,
+            values: [reg13Value, reg14Value, reg15Value],
+          );
+          await Future.delayed(const Duration(milliseconds: 200));
+
+          _registerData[13] = reg13Value;
+          _registerData[14] = reg14Value;
+          _registerData[15] = reg15Value;
+        } catch (e) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to write sensitivity-linked values to Reg 13-15')),
+          );
+          setState(() => _isWriting = false);
+          return;
         }
-
-        const reg15Value = 40;
-
-        await widget.bleManager.writeRegisters(
-          startRegister: 13,
-          values: [reg13Value, reg14Value, reg15Value],
-        );
-        await Future.delayed(const Duration(milliseconds: 200));
-
-        _registerData[13] = reg13Value;
-        _registerData[14] = reg14Value;
-        _registerData[15] = reg15Value;
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to write sensitivity-linked values to Reg 13-15')),
-        );
-        setState(() => _isWriting = false);
-        return;
       }
       
       // Build FIELD_63 (Register 64) - write only lower 12 bits (last 3 hex digits)
@@ -731,13 +738,33 @@ class _ConfigFragmentState extends State<ConfigFragment> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Expanded(
-            child: Text(
-              'SENSITIVITY',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 13,
-              ),
+          Expanded(
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'SENSITIVITY',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                Transform.scale(
+                  scale: 0.8,
+                  child: Switch(
+                    value: _enableSensitivityWrite,
+                    onChanged: (value) {
+                      setState(() => _enableSensitivityWrite = value);
+                    },
+                    activeColor: const Color(0xFF4CAF50),
+                    activeTrackColor: const Color(0xFF4CAF50).withOpacity(0.5),
+                    inactiveThumbColor: Colors.grey,
+                    inactiveTrackColor: Colors.grey.withOpacity(0.5),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ],
             ),
           ),
           Container(
