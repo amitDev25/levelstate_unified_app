@@ -931,7 +931,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8, top: 4),
                         child: Text(
-                          'FIELD 8 - System Checks',
+                          'System Checks',
                           style: TextStyle(
                             color: Color(0xFF00E5FF),
                             fontSize: 15,
@@ -939,15 +939,15 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                           ),
                         ),
                       ),
-                      _buildDropdownItem('LEVEL CHK ENA', _levelChkEna, (value) {
+                      _buildDropdownItem('LEVEL CHECK ENABLE', _levelChkEna, (value) {
                         setState(() => _levelChkEna = value!);
                       }),
                       const SizedBox(height: 8),
-                      _buildDropdownItem('VOTING CHK ENA', _votingChkEna, (value) {
+                      _buildDropdownItem('VOTING CHECK ENABLE', _votingChkEna, (value) {
                         setState(() => _votingChkEna = value!);
                       }),
                       const SizedBox(height: 8),
-                      _buildDropdownItem('AUTO ADJUST ENA', _autoAdjustEna, (value) {
+                      _buildDropdownItem('AUTO ADJUST ENABLE', _autoAdjustEna, (value) {
                         setState(() => _autoAdjustEna = value!);
                       }),
                       
@@ -957,7 +957,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8, top: 4),
                         child: Text(
-                          'FIELD 9 - Disable Flags',
+                          'Disable Flags',
                           style: TextStyle(
                             color: Color(0xFFFF6B35),
                             fontSize: 15,
@@ -965,7 +965,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                           ),
                         ),
                       ),
-                      _buildDropdownItem('CONT DISABLE', _contDisable, (value) {
+                      _buildDropdownItem('CONTAMINATION DISABLE', _contDisable, (value) {
                         setState(() => _contDisable = value!);
                       }, color: const Color(0xFFFF6B35)),
                       const SizedBox(height: 8),
@@ -973,7 +973,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                         setState(() => _shortDisableSys = value!);
                       }, color: const Color(0xFFFF6B35)),
                       const SizedBox(height: 8),
-                      _buildDropdownItem('PROC FLT DISABLE', _procFltDisable, (value) {
+                      _buildDropdownItem('PROCESS FAULT DISABLE', _procFltDisable, (value) {
                         setState(() => _procFltDisable = value!);
                       }, color: const Color(0xFFFF6B35)),
                       
@@ -983,7 +983,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8, top: 4),
                         child: Text(
-                          'FIELD 10 - System Settings',
+                          'System Settings',
                           style: TextStyle(
                             color: Color(0xFF4CAF50),
                             fontSize: 15,
@@ -991,7 +991,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                           ),
                         ),
                       ),
-                      _buildDropdownItem('PWR FLT DISABLE', _pwrFltDisable, (value) {
+                      _buildDropdownItem('POWER FAULT DISABLE', _pwrFltDisable, (value) {
                         setState(() => _pwrFltDisable = value!);
                       }, color: const Color(0xFF4CAF50)),
                       const SizedBox(height: 8),
@@ -1001,7 +1001,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                         setState(() => _sel420SteamMode = value!);
                       }, color: const Color(0xFF4CAF50)),
                       const SizedBox(height: 8),
-                      _buildConfigItem('LAST RMT ADR', 'lastRmtAdr', color: const Color(0xFF4CAF50)),
+                      _buildConfigItem('LAST REMOTE ADDRESS', 'lastRmtAdr', color: const Color(0xFF4CAF50)),
                       
                       const SizedBox(height: 20),
                       
@@ -1009,7 +1009,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8, top: 4),
                         child: Text(
-                          'FIELD 11 - Interlock Control',
+                          'Channel Settings',
                           style: TextStyle(
                             color: Color(0xFFFFEB3B),
                             fontSize: 15,
@@ -1027,7 +1027,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8, top: 4),
                         child: Text(
-                          'FIELD 63 - Fault Timing',
+                          'Fault Timing',
                           style: TextStyle(
                             color: Color(0xFFFF6B35),
                             fontSize: 15,
@@ -1035,7 +1035,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                           ),
                         ),
                       ),
-                      _buildConfigItem('SYSTEM FAULT TIME DELAY', 'sysFltTimeDelay', color: const Color(0xFFFF6B35)),
+                      _buildConfigItem('FAULT RELAY TRIP DELAY', 'sysFltTimeDelay', color: const Color(0xFFFF6B35)),
                     ],
                   ),
           ),

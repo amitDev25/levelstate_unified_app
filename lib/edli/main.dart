@@ -1058,9 +1058,9 @@ class BLEManager extends ChangeNotifier {
     });
 
     try {
-      // Scan for exactly 10 seconds, then show all results at once.
+      // Scan for exactly 2 seconds, then show all results at once.
       await FlutterBluePlus.startScan();
-      await Future.delayed(const Duration(seconds: 10));
+      await Future.delayed(const Duration(seconds: 2));
     } finally {
       await FlutterBluePlus.stopScan();
       _scanSub?.cancel();
