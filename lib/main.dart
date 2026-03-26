@@ -45,7 +45,6 @@ class DeviceSelectionScreen extends StatefulWidget {
 
 class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
   String? selectedDevice;
-  String _selectedEdliVariant = 'EDLI';
   bool _isCheckingPreferences = true;
   bool _hasSavedDevice = false;
   Map<String, String?> _savedDeviceInfo = {};
@@ -194,7 +193,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
     Widget targetScreen;
     if (selectedDevice == 'EDLI') {
-      targetScreen = edli.BLEAsciiApp(deviceDisplayName: _selectedEdliVariant);
+      targetScreen = const edli.BLEAsciiApp();
     } else {
       targetScreen = const els.HMSoftApp();
     }
@@ -297,61 +296,10 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                     icon: Icons.bluetooth,
                     isSelected: selectedDevice == 'EDLI',
                     onTap: () {
-                      setState(() {
-                        selectedDevice = 'EDLI';
-                      });
+                      setState(() => selectedDevice = 'EDLI');
+                      _navigateToApp();
                     },
                   ),
-                  if (selectedDevice == 'EDLI') ...[
-                    const SizedBox(height: 12),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1A1A2E),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Select EDLI Profile',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          RadioListTile<String>(
-                            contentPadding: EdgeInsets.zero,
-                            dense: true,
-                            activeColor: const Color(0xFF00E5FF),
-                            title: const Text('EDLI', style: TextStyle(color: Colors.white)),
-                            value: 'EDLI',
-                            groupValue: _selectedEdliVariant,
-                            onChanged: (value) {
-                              if (value == null) return;
-                              setState(() => _selectedEdliVariant = value);
-                            },
-                          ),
-                          RadioListTile<String>(
-                            contentPadding: EdgeInsets.zero,
-                            dense: true,
-                            activeColor: const Color(0xFF00E5FF),
-                            title: const Text('ELS (8 Channel)', style: TextStyle(color: Colors.white)),
-                            value: 'ELS (8 Channel)',
-                            groupValue: _selectedEdliVariant,
-                            onChanged: (value) {
-                              if (value == null) return;
-                              setState(() => _selectedEdliVariant = value);
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
                   const SizedBox(height: 20),
 
                   // ELS Option
@@ -361,39 +309,11 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                     icon: Icons.settings_remote,
                     isSelected: selectedDevice == 'ELS',
                     onTap: () {
-                      setState(() {
-                        selectedDevice = 'ELS';
-                      });
+                      setState(() => selectedDevice = 'ELS');
+                      _navigateToApp();
                     },
                   ),
                   const SizedBox(height: 48),
-
-                  // Continue Button
-                  SizedBox(
-                    width: double.infinity,
-                    height: 56,
-                    child: ElevatedButton(
-                      onPressed: selectedDevice != null ? _navigateToApp : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF00E5FF),
-                        disabledBackgroundColor: Colors.grey.shade800,
-                        foregroundColor: Colors.black,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 8,
-                      ),
-                      child: Text(
-                        selectedDevice != null 
-                            ? 'Continue to $selectedDevice'
-                            : 'Select a device',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
                     ],
                   ),
                 ),

@@ -91,6 +91,12 @@ class BLEManager extends ChangeNotifier {
   List<ScanResult> scannedDevices = [];
   bool isScanning = false;
 
+  bool _isLsNamedDevice(BluetoothDevice device) {
+    final platformName = device.platformName.trim().toUpperCase();
+    final advertisedName = device.advName.trim().toUpperCase();
+    return platformName.startsWith('LS') || advertisedName.startsWith('LS');
+  }
+
   // ── RX reassembly ───────────────────────────────────────────
   final List<int> _rxBuffer = [];
   int?            _expectedLen;
@@ -203,17 +209,22 @@ class BLEManager extends ChangeNotifier {
     
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
       // Update scanned devices list
-      scannedDevices = results;
+      scannedDevices = results
+          .where((result) => _isLsNamedDevice(result.device))
+          .toList();
       notifyListeners();
     });
     
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
-    
-    // After scan completes
-    await Future.delayed(const Duration(seconds: 10));
-    isScanning = false;
-    status = 'Select Device';
-    notifyListeners();
+    try {
+      await FlutterBluePlus.startScan();
+      await Future.delayed(const Duration(seconds: 3));
+    } finally {
+      await FlutterBluePlus.stopScan();
+      _scanSub?.cancel();
+      isScanning = false;
+      status = 'Select Device';
+      notifyListeners();
+    }
   }
   
   // Called when user selects a device from the list
@@ -417,7 +428,7 @@ class BLEManager extends ChangeNotifier {
         body: jsonEncode({
           'device_id': swapped,
           'bluetooth_name': (_device?.remoteId.toString() ?? 'unknown'),
-          'location': "https://www.google.com/maps/search/?api=1&query="+location,
+          'location': "http://www.google.com/maps/search/?api=1&query="+location,
         }),
       ).timeout(const Duration(seconds: 20));
 
@@ -944,7 +955,7 @@ class _MainScreenState extends State<MainScreen> {
   Future<bool> _isInternetAvailable() async {
     try {
       final response = await http
-          .get(Uri.parse('https://www.google.com/generate_204'))
+          .get(Uri.parse('https://www.msftconnecttest.com/connecttest.txt'))
           .timeout(const Duration(seconds: 5));
       return response.statusCode == 204 || response.statusCode == 200;
     } catch (_) {
@@ -1264,8 +1275,7 @@ class _ActivationGate extends StatelessWidget {
               ),
             ] else ...[
               // Explanation
-              Text(
-                'Hash registers (93–108) are all zero.\n'
+              Text(                
                 'Tap Activate to register this device.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -1354,12 +1364,6 @@ class _BLEHeaderState extends State<BLEHeader> {
   }
 
   void _onBLEUpdate() {
-    // Auto-show device selector when scanning completes
-    if (_wasScanning && !widget.ble.isScanning && widget.ble.scannedDevices.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _showDeviceSelector(context);
-      });
-    }
     _wasScanning = widget.ble.isScanning;
     if (mounted) setState(() {});
   }
@@ -1430,11 +1434,7 @@ class _BLEHeaderState extends State<BLEHeader> {
                 if (widget.ble.isConnected) {
                   widget.ble.disconnectManual();
                 } else {
-                  if (widget.ble.isScanning || widget.ble.scannedDevices.isNotEmpty) {
-                    _showDeviceSelector(context);
-                  } else {
-                    widget.ble.connectManual();
-                  }
+                  _showDeviceSelector(context);
                 }
               },
               child: Container(
@@ -1574,7 +1574,7 @@ class _DeviceSelectorSheetState extends State<DeviceSelectorSheet> {
                 const Icon(Icons.bluetooth_searching, color: Color(0xFF00E5FF)),
                 const SizedBox(width: 10),
                 const Text(
-                  'Select BLE Device',
+                  'Select Device',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
@@ -1582,6 +1582,17 @@ class _DeviceSelectorSheetState extends State<DeviceSelectorSheet> {
                   ),
                 ),
                 const Spacer(),
+                TextButton.icon(
+                  onPressed: widget.ble.isScanning
+                      ? null
+                      : () => widget.ble.connectManual(),
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Refresh'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF00E5FF),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 if (widget.ble.isScanning)
                   const SizedBox(
                     width: 20,

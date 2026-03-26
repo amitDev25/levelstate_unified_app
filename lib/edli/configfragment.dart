@@ -4,14 +4,24 @@ import 'main.dart';
 
 class ConfigFragment extends StatefulWidget {
   final BLEManager bleManager;
+  final String deviceDisplayName;
 
-  const ConfigFragment({super.key, required this.bleManager});
+  const ConfigFragment({
+    super.key,
+    required this.bleManager,
+    required this.deviceDisplayName,
+  });
 
   @override
   State<ConfigFragment> createState() => _ConfigFragmentState();
 }
 
 class _ConfigFragmentState extends State<ConfigFragment> {
+  bool get _showSteamModeOption {
+    final name = widget.deviceDisplayName.trim().toUpperCase();
+    return name != 'ELS' && name != 'ELS (8 CHANNEL)';
+  }
+
   // FIELD_8 (Register 9) - Dropdown fields (1=Yes, 0=No)
   String _levelChkEna = 'No';
   String _votingChkEna = 'No';
@@ -996,10 +1006,12 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                       }, color: const Color(0xFF4CAF50)),
                       const SizedBox(height: 8),
                       _buildSensitivityDropdown(),
-                      const SizedBox(height: 8),
-                      _buildDropdownItem('4 - 20 STEAM MODE', _sel420SteamMode, (value) {
-                        setState(() => _sel420SteamMode = value!);
-                      }, color: const Color(0xFF4CAF50)),
+                      if (_showSteamModeOption) ...[
+                        const SizedBox(height: 8),
+                        _buildDropdownItem('4 - 20 STEAM MODE', _sel420SteamMode, (value) {
+                          setState(() => _sel420SteamMode = value!);
+                        }, color: const Color(0xFF4CAF50)),
+                      ],
                       const SizedBox(height: 8),
                       _buildConfigItem('LAST REMOTE ADDRESS', 'lastRmtAdr', color: const Color(0xFF4CAF50)),
                       

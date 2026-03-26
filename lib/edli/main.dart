@@ -180,6 +180,12 @@ class BLEManager extends ChangeNotifier {
   String status = 'Disconnected';
   List<String> logs = [];
 
+  bool _isLsNamedDevice(BluetoothDevice device) {
+    final platformName = device.platformName.trim().toUpperCase();
+    final advertisedName = device.advName.trim().toUpperCase();
+    return platformName.startsWith('LS') || advertisedName.startsWith('LS');
+  }
+
   // ── Custom command fields (for modbus) ───────────────────────────────
   String slaveID        = '';
   String functionCode   = '3';
@@ -853,7 +859,7 @@ class BLEManager extends ChangeNotifier {
       notifyListeners();
       
       final response = await http.post(
-        Uri.parse('https://levelstate-server-flask.onrender.com/hmac'),
+        Uri.parse('https://hls-fv20.onrender.com/hmac'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'device_id': deviceHexData,
@@ -1054,13 +1060,15 @@ class BLEManager extends ChangeNotifier {
     _pendingScanResults.clear();
     
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
-      _pendingScanResults = results;
+      _pendingScanResults = results
+          .where((result) => _isLsNamedDevice(result.device))
+          .toList();
     });
 
     try {
       // Scan for exactly 2 seconds, then show all results at once.
       await FlutterBluePlus.startScan();
-      await Future.delayed(const Duration(seconds: 2));
+      await Future.delayed(const Duration(seconds: 3));
     } finally {
       await FlutterBluePlus.stopScan();
       _scanSub?.cancel();
@@ -1362,21 +1370,40 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
     with SingleTickerProviderStateMixin {
   final BLEManager _ble = BLEManager();
   late TabController _tabController;
+  late String _activeDeviceDisplayName;
   bool _isSaved = false;
   bool _bannerDismissed = false;
   bool _wasConnected = false;
   bool _isDisconnectDialogVisible = false;
 
+  String _resolveProfileFromBleName(BluetoothDevice device) {
+    final platformName = device.platformName.trim().toUpperCase();
+    final advertisedName = device.advName.trim().toUpperCase();
+    if (platformName.startsWith('LSE') || advertisedName.startsWith('LSE')) {
+      return 'ELS';
+    }
+    if (platformName.startsWith('LSD') || advertisedName.startsWith('LSD')) {
+      return 'EDLI';
+    }
+    return _activeDeviceDisplayName;
+  }
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 6, vsync: this);
+    _activeDeviceDisplayName = widget.deviceDisplayName;
     _ble.addListener(_onUpdate);
     _checkSavedStatus();
     
     // Auto-connect if device is provided
     if (widget.autoConnectDevice != null) {
       Future.delayed(Duration.zero, () {
+        if (mounted) {
+          setState(() {
+            _activeDeviceDisplayName = _resolveProfileFromBleName(widget.autoConnectDevice!);
+          });
+        }
         _ble.connectToDevice(widget.autoConnectDevice!);
       });
     }
@@ -1548,9 +1575,9 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
         await DevicePreferences.saveDevice(
           deviceType: 'EDLI',
           deviceId: _ble._device!.remoteId.toString(),
-          deviceName: widget.deviceDisplayName == 'ELS'
+          deviceName: _activeDeviceDisplayName == 'ELS'
               ? 'ELS (8 Channel)'
-              : widget.deviceDisplayName,
+              : _activeDeviceDisplayName,
         );
         setState(() {
           _isSaved = true;
@@ -1581,7 +1608,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
   Future<bool> _isInternetAvailable() async {
     try {
       final response = await http
-          .get(Uri.parse('https://www.google.com/generate_204'))
+          .get(Uri.parse('http://www.msftconnecttest.com/connecttest.txt'))
           .timeout(const Duration(seconds: 5));
       return response.statusCode == 204 || response.statusCode == 200;
     } catch (_) {
@@ -1876,6 +1903,9 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                                   color: Color(0xFF00E5FF),
                                 ),
                                 onTap: () async {
+                                  setState(() {
+                                    _activeDeviceDisplayName = _resolveProfileFromBleName(device);
+                                  });
                                   Navigator.of(dialogContext).pop();
                                   await _ble.connectToDevice(device);
                                 },
@@ -1943,7 +1973,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
             child: Row(
               children: [
                 Text(
-                  widget.deviceDisplayName,
+                  _activeDeviceDisplayName,
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
@@ -2054,7 +2084,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                   LedStatusFragment(
                     bleManager: _ble,
                     tabController: _tabController,
-                    deviceDisplayName: widget.deviceDisplayName,
+                    deviceDisplayName: _activeDeviceDisplayName,
                   ),
                   HomeFragment(bleManager: _ble),
                   CustomCommandTab(
@@ -2063,7 +2093,10 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                   ),
                   
                   AdminFragment(bleManager: _ble),
-                  ConfigFragment(bleManager: _ble),
+                  ConfigFragment(
+                    bleManager: _ble,
+                    deviceDisplayName: _activeDeviceDisplayName,
+                  ),
                   SettingFragment(bleManager: _ble),
                 ],
               ),
