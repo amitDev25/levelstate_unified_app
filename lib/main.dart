@@ -291,9 +291,9 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
                   // EDLI Option
                   _DeviceOptionCard(
-                    title: 'EDLI / ELS',
-                    description: 'EDLI Device',
-                    icon: Icons.bluetooth,
+                    title: 'Full Device',
+                    description: 'EDLI / ELS Device',
+                    imageAsset: 'assets/full_device.png',
                     isSelected: selectedDevice == 'EDLI',
                     onTap: () {
                       setState(() => selectedDevice = 'EDLI');
@@ -304,9 +304,9 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
                   // ELS Option
                   _DeviceOptionCard(
-                    title: 'ELS',
+                    title: 'Compact Device',
                     description: 'ELS300 Device',
-                    icon: Icons.settings_remote,
+                    imageAsset: 'assets/compact_device.png',
                     isSelected: selectedDevice == 'ELS',
                     onTap: () {
                       setState(() => selectedDevice = 'ELS');
@@ -350,25 +350,6 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Saved device icon
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF00E5FF).withOpacity(0.1),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: const Color(0xFF00E5FF),
-                        width: 2,
-                      ),
-                    ),
-                    child: const Icon(
-                      Icons.bookmark,
-                      size: 60,
-                      color: Color(0xFF00E5FF),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  
                   // Title
                   const Text(
                     'Saved Device Found',
@@ -388,44 +369,14 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                   ),
                   const SizedBox(height: 48),
 
-                  // Device info card
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1A1A2E),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: const Color(0xFF00E5FF).withOpacity(0.3),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              deviceType == 'EDLI' ? Icons.bluetooth : Icons.settings_remote,
-                              color: const Color(0xFF00E5FF),
-                              size: 28,
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              displayDeviceType,
-                              style: const TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF00E5FF),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        _buildInfoRow('Device Name:', deviceName),
-                        const SizedBox(height: 8),
-                        _buildInfoRow('Device ID:', deviceId),
-                      ],
-                    ),
+                  // Device image
+                  Image.asset(
+                    deviceType == 'EDLI'
+                        ? 'assets/full_device.png'
+                        : 'assets/compact_device.png',
+                    width: 200,
+                    height: 200,
+                    fit: BoxFit.contain,
                   ),
                   const SizedBox(height: 48),
 
@@ -554,14 +505,14 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 class _DeviceOptionCard extends StatelessWidget {
   final String title;
   final String description;
-  final IconData icon;
+  final String imageAsset;
   final bool isSelected;
   final VoidCallback onTap;
 
   const _DeviceOptionCard({
     required this.title,
     required this.description,
-    required this.icon,
+    required this.imageAsset,
     required this.isSelected,
     required this.onTap,
   });
@@ -597,17 +548,20 @@ class _DeviceOptionCard extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.zero,
               decoration: BoxDecoration(
                 color: isSelected
                     ? const Color(0xFF00E5FF)
                     : Colors.white12,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(
-                icon,
-                size: 32,
-                color: isSelected ? Colors.black : Colors.white70,
+              child: SizedBox(
+                width: 92,
+                height: 92,
+                child: Image.asset(
+                  imageAsset,
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
             const SizedBox(width: 20),
@@ -618,7 +572,7 @@ class _DeviceOptionCard extends StatelessWidget {
                   Text(
                     title,
                     style: TextStyle(
-                      fontSize: 22,
+                      fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: isSelected 
                           ? const Color(0xFF00E5FF)
@@ -629,7 +583,7 @@ class _DeviceOptionCard extends StatelessWidget {
                   Text(
                     description,
                     style: const TextStyle(
-                      fontSize: 14,
+                      fontSize: 12,
                       color: Colors.white60,
                     ),
                   ),

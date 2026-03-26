@@ -28,14 +28,13 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   String? _errorMessage;
   bool _wasConnected = false;  // Track previous connection state
   bool _wasCheckingActivation = false;  // Track previous activation check state
-  bool _isPageActive = false;  // Track if LED Status tab is currently active
-  bool _isSilentRefresh = false;  // Track if current operation is a silent refresh
+  bool _didAutoRefreshOnConnect = false;  // Only refresh once per connection
+  bool _pendingAutoRefreshOnActivate = false;  // Defer refresh until activation completes
   
   final Map<String, bool> _blinkStates = {};
   Timer? _fastBlinkTimer;
   Timer? _slowBlinkTimer;
   Timer? _parseTimeoutTimer;
-  Timer? _autoRefreshTimer;  // Timer for auto-refreshing LED status every 5 seconds
 
   @override
   bool get wantKeepAlive => true;
@@ -53,64 +52,17 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     // Set up Modbus response callback
     widget.bleManager.onModbusResponse = _handleModbusResponse;
     
-    // Listen to tab changes
-    widget.tabController.addListener(_onTabChanged);
-    
-    // Check initial tab state (LED Status is tab 0)
-    _isPageActive = widget.tabController.index == 0;
-    
     _startBlinkTimers();
-    
-    // Start auto-refresh timer for real-time monitoring
-    _startAutoRefreshTimer();
-    
-    // Auto-load data when the fragment is opened (with small delay to ensure stable initialization)
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (widget.bleManager.isConnected) {
-        // Small delay to ensure callback is properly registered after tab switch
-        await Future.delayed(const Duration(milliseconds: 200));
-        if (mounted) {
-          _sendCommand();
-        }
-      }
-    });
   }
 
   @override
   void dispose() {
-    widget.tabController.removeListener(_onTabChanged);
     _fastBlinkTimer?.cancel();
     _slowBlinkTimer?.cancel();
     _parseTimeoutTimer?.cancel();
-    _autoRefreshTimer?.cancel();
     widget.bleManager.removeListener(_onBLEUpdate);
     widget.bleManager.onModbusResponse = null;
     super.dispose();
-  }
-
-  void _onTabChanged() {
-    if (!mounted) return;
-    
-    // LED Status tab is index 0
-    final bool isOnLedStatusTab = widget.tabController.index == 0;
-    
-    if (isOnLedStatusTab != _isPageActive) {
-      setState(() {
-        _isPageActive = isOnLedStatusTab;
-      });
-      
-      if (isOnLedStatusTab) {
-        print('[LedStatusFragment] Switched to LED Status tab (index ${widget.tabController.index}) - resuming auto-refresh');
-        // Optionally do an immediate refresh when returning to the page
-        if (widget.bleManager.isConnected && 
-            widget.bleManager.isDeviceActivated && 
-            !widget.bleManager.isCheckingActivation) {
-          _silentRefresh();
-        }
-      } else {
-        print('[LedStatusFragment] Switched away from LED Status tab to index ${widget.tabController.index} - pausing auto-refresh');
-      }
-    }
   }
 
   void _startBlinkTimers() {
@@ -143,74 +95,6 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     }
   }
 
-  void _startAutoRefreshTimer() {
-    _autoRefreshTimer?.cancel();
-    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      
-      // Only refresh if on LED Status tab AND device is ready AND not already busy
-      if (_isPageActive && 
-          widget.bleManager.isConnected && 
-          widget.bleManager.isDeviceActivated && 
-          !widget.bleManager.isCheckingActivation &&
-          !_isLoading &&
-          !_isSilentRefresh) {
-        print('[LedStatusFragment] Auto-refreshing LED status (every 5 seconds)');
-        _silentRefresh();
-      } else {
-        print('[LedStatusFragment] Skipping auto-refresh - Page active: $_isPageActive, Connected: ${widget.bleManager.isConnected}, Activated: ${widget.bleManager.isDeviceActivated}, Loading: $_isLoading, Silent refresh in progress: $_isSilentRefresh');
-      }
-    });
-  }
-
-  void _silentRefresh() async {
-    if (!mounted) return;
-    
-    if (!widget.bleManager.isConnected) {
-      return;
-    }
-
-    // Re-register callback in case another fragment overwrote it
-    widget.bleManager.onModbusResponse = _handleModbusResponse;
-
-    try {
-      // Mark as silent refresh (don't show loading indicator)
-      _isSilentRefresh = true;
-
-      // Write 3 to register 0
-      await widget.bleManager.writeRegisters(startRegister: 0, values: [3]);
-      
-      // Wait 3 seconds
-      await Future.delayed(const Duration(seconds: 3));
-      
-      // Re-register callback right before reading to ensure it's still active
-      widget.bleManager.onModbusResponse = _handleModbusResponse;
-      
-      // Read registers (same as _sendCommand)
-      await widget.bleManager.readRegisters(startRegister: 2, quantity: 35);
-      
-      // Timeout handler
-      _parseTimeoutTimer?.cancel();
-      _parseTimeoutTimer = Timer(const Duration(seconds: 8), () {
-        if (_isSilentRefresh && mounted) {
-          setState(() {
-            _isSilentRefresh = false;
-            _errorMessage = 'Silent refresh timeout';
-          });
-        }
-      });
-    } catch (e) {
-      print('[LedStatusFragment] Silent refresh error: $e');
-      if (mounted) {
-        setState(() {
-          _isSilentRefresh = false;
-        });
-      }
-    }
-  }
 
   void _onBLEUpdate() {
     if (!mounted) return;
@@ -219,30 +103,6 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     final isConnectedNow = widget.bleManager.isConnected;
     final isCheckingActivationNow = widget.bleManager.isCheckingActivation;
     
-    if (isConnectedNow && !_wasConnected && !_isLoading && 
-        !widget.bleManager.isCheckingActivation) {
-      // Connection just established and not checking activation, trigger auto-load
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted && widget.bleManager.isConnected && 
-            !widget.bleManager.isCheckingActivation &&
-            widget.bleManager.isDeviceActivated) {
-          _sendCommand();
-        }
-      });
-    }
-    
-    // Check if activation check just completed successfully
-    if (_wasCheckingActivation && !isCheckingActivationNow && 
-        widget.bleManager.isDeviceActivated && !_isLoading) {
-      // Activation check just completed successfully, auto-reload LED status
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted && widget.bleManager.isConnected && 
-            widget.bleManager.isDeviceActivated) {
-          _sendCommand();
-        }
-      });
-    }
-
     // If disconnected, clear LED data so stale blinking/status does not remain
     if (_wasConnected && !isConnectedNow) {
       setState(() {
@@ -251,11 +111,29 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
         _pfStatus = 0;
         _channelStatuses.clear();
         _isLoading = false;
-        _isSilentRefresh = false;
         _errorMessage = null;
       });
+      _didAutoRefreshOnConnect = false;
+      _pendingAutoRefreshOnActivate = false;
     }
     
+    if (isConnectedNow && !_isLoading && !_didAutoRefreshOnConnect) {
+      if (widget.bleManager.isDeviceActivated && !widget.bleManager.isCheckingActivation) {
+        _didAutoRefreshOnConnect = true;
+        _pendingAutoRefreshOnActivate = false;
+        _sendCommand();
+      } else {
+        _pendingAutoRefreshOnActivate = true;
+      }
+    }
+
+    if (isConnectedNow && _pendingAutoRefreshOnActivate && !_didAutoRefreshOnConnect &&
+        widget.bleManager.isDeviceActivated && !widget.bleManager.isCheckingActivation) {
+      _didAutoRefreshOnConnect = true;
+      _pendingAutoRefreshOnActivate = false;
+      _sendCommand();
+    }
+
     _wasConnected = isConnectedNow;
     _wasCheckingActivation = isCheckingActivationNow;
     
@@ -263,12 +141,10 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
   }
 
   void _handleModbusResponse() {
-    print('[LedStatusFragment] _handleModbusResponse called, mounted=$mounted, _isLoading=$_isLoading, _isSilentRefresh=$_isSilentRefresh');
+    print('[LedStatusFragment] _handleModbusResponse called, mounted=$mounted, _isLoading=$_isLoading');
     
-    // For silent refresh, we don't check _isLoading
-    // For regular load, we check _isLoading
     if (!mounted) return;
-    if (!_isLoading && !_isSilentRefresh) return;
+    if (!_isLoading) return;
     
     final response = widget.bleManager.lastModbusResponse;
     print('[LedStatusFragment] Response length: ${response.length}, FC: ${response.length > 1 ? response[1] : "N/A"}');
@@ -283,7 +159,6 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
     if (values.isEmpty) {
       setState(() {
         _isLoading = false;
-        _isSilentRefresh = false;
       });
       return;
     }
@@ -314,13 +189,8 @@ class _LedStatusFragmentState extends State<LedStatusFragment> with AutomaticKee
       }
       
       _isLoading = false;
-      _isSilentRefresh = false;
       _errorMessage = null;
     });
-    
-    if (_isSilentRefresh) {
-      print('[LedStatusFragment] Silent refresh completed successfully');
-    }
   }
 
   void _sendCommand() async {

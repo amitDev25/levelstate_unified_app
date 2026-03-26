@@ -77,6 +77,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
     
     // Auto-send read command when the fragment is opened (only if not checking activation)
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       if (widget.bleManager.isConnected && 
           !widget.bleManager.isCheckingActivation &&
           widget.bleManager.isDeviceActivated) {
