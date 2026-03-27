@@ -877,7 +877,7 @@ class BLEManager extends ChangeNotifier {
       
       // Step 5: Parse and swap HMAC response
       final json = jsonDecode(response.body) as Map<String, dynamic>;
-      final hmacHash = (json['hmac_sha256'] as String).trim();
+      final hmacHash = json['hmac_sha256'].toString().trim();
       
       // Check if API returned -1 (device not registered)
       if (hmacHash == '-1') {
@@ -1606,14 +1606,26 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
   }
 
   Future<bool> _isInternetAvailable() async {
-    try {
-      final response = await http
-          .get(Uri.parse('http://www.msftconnecttest.com/connecttest.txt'))
-          .timeout(const Duration(seconds: 5));
-      return response.statusCode == 204 || response.statusCode == 200;
-    } catch (_) {
-      return false;
+    const endpoints = [
+      'http://www.msftconnecttest.com/connecttest.txt',
+      'https://www.apple.com/library/test/success.html',
+      'https://www.baidu.com',
+    ];
+
+    for (final endpoint in endpoints) {
+      try {
+        final response = await http
+            .get(Uri.parse(endpoint))
+            .timeout(const Duration(seconds: 5));
+        if (response.statusCode >= 200 && response.statusCode < 400) {
+          return true;
+        }
+      } catch (_) {
+        // Try next endpoint.
+      }
     }
+
+    return false;
   }
 
   Future<void> _showLocationRequiredDialog() async {
@@ -2173,8 +2185,8 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'This device is not registered in the system.\n'
-                      'Registration failed (API returned -1).\n\n'
+                      'This device is not registered in the system.\n\n'
+                      
                       'Please contact support to register this device.',
                       style: TextStyle(
                         color: Colors.white70,

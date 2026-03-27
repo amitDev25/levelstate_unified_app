@@ -438,8 +438,17 @@ class BLEManager extends ChangeNotifier {
 
       // ── Java: jsonResponse.getString("hmac_sha256") ──────
       final json     = jsonDecode(response.body) as Map<String, dynamic>;
-      final hmacHash = (json['hmac_sha256'] as String).trim();
+      final hmacHash = json['hmac_sha256'].toString().trim();
       logs.add('HMAC received: $hmacHash');
+
+      if (hmacHash == '-1') {
+        activationStatus  = ActivationStatus.needsActivation;
+        activationMessage = 'Device is not registered';
+        activationError   = true;
+        logs.add('Device not registered (API returned -1)');
+        notifyListeners();
+        return;
+      }
 
       // ── Java: writeHmacToRegisters ───────────────────────
       await _writeHmacToRegisters(hmacHash);
@@ -953,14 +962,26 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<bool> _isInternetAvailable() async {
-    try {
-      final response = await http
-          .get(Uri.parse('https://www.msftconnecttest.com/connecttest.txt'))
-          .timeout(const Duration(seconds: 5));
-      return response.statusCode == 204 || response.statusCode == 200;
-    } catch (_) {
-      return false;
+    const endpoints = [
+      'http://www.msftconnecttest.com/connecttest.txt',
+      'https://www.apple.com/library/test/success.html',
+      'https://www.baidu.com',
+    ];
+
+    for (final endpoint in endpoints) {
+      try {
+        final response = await http
+            .get(Uri.parse(endpoint))
+            .timeout(const Duration(seconds: 5));
+        if (response.statusCode >= 200 && response.statusCode < 400) {
+          return true;
+        }
+      } catch (_) {
+        // Try next endpoint.
+      }
     }
+
+    return false;
   }
 
   Future<void> _showLocationRequiredDialog() async {
