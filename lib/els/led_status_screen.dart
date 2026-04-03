@@ -64,7 +64,7 @@ class _LEDStatusScreenState extends State<LEDStatusScreen> {
     return Column(children: [
       BLEHeader(
         ble: ble, 
-        title: 'LED STATUS',
+        title: 'ELS',
         isSaved: widget.isSaved,
         onToggleSave: widget.onToggleSave,
       ),

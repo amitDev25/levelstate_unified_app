@@ -237,7 +237,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     return Column(children: [
       BLEHeader(
         ble: widget.ble, 
-        title: 'CONFIGURATION',
+        title: 'ELS',
         isSaved: widget.isSaved,
         onToggleSave: widget.onToggleSave,
       ),

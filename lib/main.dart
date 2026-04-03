@@ -108,7 +108,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'Connecting to $deviceType...',
+                  'Connecting to device...',
                   style: const TextStyle(color: Colors.white, fontSize: 16),
                 ),
               ],
@@ -258,7 +258,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
           child: LayoutBuilder(
             builder: (context, constraints) {
               return SingleChildScrollView(
-                padding: const EdgeInsets.all(24.0),
+                padding: const EdgeInsets.all(20.0),
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minHeight: constraints.maxHeight - 48),
                   child: Column(
@@ -291,8 +291,8 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
 
                   // EDLI Option
                   _DeviceOptionCard(
-                    title: 'Full Device',
-                    description: 'EDLI / ELS Device',
+                    title: 'Conventional Device',
+                    description: 'Channel count more than 4',
                     imageAsset: 'assets/full_device.png',
                     isSelected: selectedDevice == 'EDLI',
                     onTap: () {
@@ -305,7 +305,7 @@ class _DeviceSelectionScreenState extends State<DeviceSelectionScreen> {
                   // ELS Option
                   _DeviceOptionCard(
                     title: 'Compact Device',
-                    description: 'ELS300 Device',
+                    description: 'ELS300+ Device',
                     imageAsset: 'assets/compact_device.png',
                     isSelected: selectedDevice == 'ELS',
                     onTap: () {

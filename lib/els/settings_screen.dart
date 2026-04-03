@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'main.dart' show BLEManager;
+import 'main.dart' show BLEManager, BLEHeader;
 
 // ─────────────────────────────────────────────────────────────
 // TAB 4: SETTINGS SCREEN  (optimized with bulk register read)
@@ -216,30 +216,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return Column(children: [
-      // Header with refresh button
+      BLEHeader(
+        ble: widget.ble,
+        title: 'ELS',
+        isSaved: widget.isSaved,
+        onToggleSave: widget.onToggleSave,
+      ),
+
+      // Refresh button row
       Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-        child: Row(children: [
-          const Expanded(
-            child: Text('CHANNEL SETTINGS',
-                style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white)),
-          ),
-          ElevatedButton(
-            onPressed: _isReading ? null : _startSequentialRead,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00E5FF),
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            ElevatedButton(
+              onPressed: _isReading ? null : _startSequentialRead,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF),
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Refresh',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             ),
-            child: const Text('Refresh',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-          ),
-        ]),
+          ],
+        ),
       ),
 
       // Reading progress banner

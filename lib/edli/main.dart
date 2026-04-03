@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
@@ -61,6 +62,8 @@ class BLEAsciiApp extends StatelessWidget {
 // Simplified: only connection, send ASCII, receive ASCII
 // ─────────────────────────────────────────────────────────────
 class BLEManager extends ChangeNotifier {
+  static const List<int> _hmacSecretKey = [90, 57, 33, 35, 82, 50, 113, 120]; // Z9!#R2qx
+
   List<ScanResult> availableDevices = [];
   
   // Field mapping for response array (update with actual PDF field names)
@@ -179,6 +182,16 @@ class BLEManager extends ChangeNotifier {
   bool isScanning = false;
   String status = 'Disconnected';
   List<String> logs = [];
+
+  String get connectedDeviceName {
+    final device = _device;
+    if (device == null) return '';
+    final platformName = device.platformName.trim();
+    if (platformName.isNotEmpty) return platformName;
+    final advertisedName = device.advName.trim();
+    if (advertisedName.isNotEmpty) return advertisedName;
+    return device.remoteId.toString();
+  }
 
   bool _isLsNamedDevice(BluetoothDevice device) {
     final platformName = device.platformName.trim().toUpperCase();
@@ -478,6 +491,30 @@ class BLEManager extends ChangeNotifier {
     return values;
   }
 
+  String _swapRegistersToHex(List<int> registers) {
+    final swappedParts = <String>[];
+    for (final value in registers) {
+      final original = value.toRadixString(16).padLeft(4, '0').toUpperCase();
+      swappedParts.add(original.substring(2, 4) + original.substring(0, 2));
+    }
+    return swappedParts.join('');
+  }
+
+  String _calculateHmacSha256FromDeviceId(String deviceIdHex) {
+    List<int> messageBytes;
+    try {
+      messageBytes = <int>[];
+      for (int i = 0; i + 2 <= deviceIdHex.length; i += 2) {
+        messageBytes.add(int.parse(deviceIdHex.substring(i, i + 2), radix: 16));
+      }
+    } catch (_) {
+      messageBytes = utf8.encode(deviceIdHex);
+    }
+
+    final digest = Hmac(sha256, _hmacSecretKey).convert(messageBytes);
+    return digest.toString().toUpperCase();
+  }
+
   /// Helper method to poll register 0 until it becomes 0
   Future<bool> _waitForRegister0ToBeZero({int maxAttempts = 30, int delayMs = 200}) async {
     for (int i = 0; i < maxAttempts; i++) {
@@ -526,11 +563,11 @@ class BLEManager extends ChangeNotifier {
       logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       notifyListeners();
       
-      // Step 1: Write 5 to register 0
-      logs.add('📝 Step 1: Writing 5 to reg 0...');
+      // Step 1: Write 1 to register 0
+      logs.add('📝 Step 1: Writing 1 to reg 0...');
       notifyListeners();
-      await writeRegisters(startRegister: 0, values: [5]);
-      logs.add('✓ Wrote 5 to reg 0');
+      await writeRegisters(startRegister: 0, values: [1]);
+      logs.add('✓ Wrote 1 to reg 0');
       notifyListeners();
       
       // Step 2: Wait for register 0 to become 0
@@ -542,30 +579,6 @@ class BLEManager extends ChangeNotifier {
       final ready1 = await _waitForRegister0ToBeZero();
       
       if (!ready1) {
-        logs.add('❌ Timeout waiting for reg 0 after write 5');
-        logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        isCheckingActivation = false;
-        notifyListeners();
-        return;
-      }
-      
-      logs.add('✓ Register 0 is now 0');
-      notifyListeners();
-      
-      // Step 3: Write 1 to register 0
-      logs.add('📝 Step 3: Writing 1 to reg 0...');
-      notifyListeners();
-      await writeRegisters(startRegister: 0, values: [1]);
-      logs.add('✓ Wrote 1 to reg 0');
-      notifyListeners();
-      
-      // Step 4: Wait for register 0 to become 0
-      logs.add('⏳ Step 4: Waiting for reg 0 to become 0...');
-      notifyListeners();
-      
-      final ready2 = await _waitForRegister0ToBeZero();
-      
-      if (!ready2) {
         logs.add('❌ Timeout waiting for reg 0 after write 1');
         logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         isCheckingActivation = false;
@@ -579,14 +592,14 @@ class BLEManager extends ChangeNotifier {
       // Small delay after polling completes
       await Future.delayed(const Duration(milliseconds: 100));
       
-      // Step 5: Read register 95
-      logs.add('📖 Step 5: Reading register 95...');
+      // Step 3: Read registers 89-110 (device ID + hash)
+      logs.add('📖 Step 3: Reading registers 89-110...');
       notifyListeners();
       
       // Clear response buffer before reading
       lastModbusResponse = Uint8List(0);
       
-      await readRegisters(startRegister: 95, quantity: 1);
+      await readRegisters(startRegister: 89, quantity: 22);
       
       // Wait for response
       await Future.delayed(const Duration(milliseconds: 800));
@@ -602,27 +615,19 @@ class BLEManager extends ChangeNotifier {
         logs.add('   Parsed ${values.length} register value(s)');
         notifyListeners();
         
-        if (values.isNotEmpty) {
-          final reg95Value = values[0];
-          logs.add('✓ Register 95 = 0x${reg95Value.toRadixString(16).padLeft(4, '0').toUpperCase()} (Dec: $reg95Value)');
+        if (values.length >= 22) {
+          final swappedDeviceId = _swapRegistersToHex(values.sublist(0, 6));
+          final swappedStoredHash = _swapRegistersToHex(values.sublist(6, 22));
+          final calculatedHash = _calculateHmacSha256FromDeviceId(swappedDeviceId);
+
+          logs.add('✓ Swapped device ID: $swappedDeviceId');
+          logs.add('✓ Stored hash (swapped): $swappedStoredHash');
+          logs.add('✓ Calculated hash: $calculatedHash');
           notifyListeners();
-          
-          if (reg95Value == 0) {
-            // Device is NOT activated
+
+          if (calculatedHash == swappedStoredHash.toUpperCase()) {
             logs.add('');
-            logs.add('⚠️  Device is NOT activated!');
-            logs.add('   Please click the ACTIVATE button to activate.');
-            logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-            isDeviceActivated = false;
-            needsActivation = true;
-            isCheckingActivation = false;
-            notifyListeners();
-            return;
-          } else {
-            // Device is already activated
-            logs.add('');
-            logs.add('✅ Device is activated!');
-            logs.add('   (Register 95 is not 0000)');
+            logs.add('✅ Device is activated! (hash matched)');
             logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
             isDeviceActivated = true;
             needsActivation = false;
@@ -630,12 +635,22 @@ class BLEManager extends ChangeNotifier {
             notifyListeners();
             return;
           }
-        } else {
-          logs.add('❌ No values parsed from response');
+
+          logs.add('');
+          logs.add('⚠️  Device is NOT activated! (hash mismatch)');
+          logs.add('   Please click the ACTIVATE button to activate.');
+          logs.add('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          isDeviceActivated = false;
+          needsActivation = true;
+          isCheckingActivation = false;
           notifyListeners();
+          return;
         }
+
+        logs.add('❌ Insufficient values for activation check (need 22 registers)');
+        notifyListeners();
       } else {
-        logs.add('❌ Invalid or no response for register 95');
+        logs.add('❌ Invalid or no response for registers 89-110');
         if (lastModbusResponse.length > 0) {
           logs.add('   Response: ${_toHexString(lastModbusResponse)}');
         }
@@ -1967,6 +1982,8 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
 
   @override
   Widget build(BuildContext context) {
+    final bluetoothName = _ble.isConnected ? _ble.connectedDeviceName : '';
+
     return SafeArea(
       child: Scaffold(
         body: Stack(
@@ -1982,108 +1999,138 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                 bottom: BorderSide(color: Colors.cyan.withOpacity(0.15)),
               ),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _activeDeviceDisplayName,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-                const Spacer(),
-                // Status indicator
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 400),
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _ble.isConnected ? Colors.greenAccent : Colors.redAccent,
-                    boxShadow: [
-                      BoxShadow(
-                        color: (_ble.isConnected ? Colors.green : Colors.red)
-                            .withOpacity(0.5),
-                        blurRadius: 6,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  _ble.status,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.6),
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                // Connect/Disconnect button
-                GestureDetector(
-                  onTap: _ble.isConnected ? _ble.disconnect : _onConnectPressed,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: _ble.isConnected
-                            ? Colors.redAccent
-                            : const Color(0xFF00E5FF),
-                      ),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      _ble.isConnected ? 'Disconnect' : 'Connect',
-                      style: TextStyle(
-                        color: _ble.isConnected
-                            ? Colors.redAccent
-                            : const Color(0xFF00E5FF),
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-                // Save/Unsave button (only show when connected)
-                if (_ble.isConnected)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: GestureDetector(
-                      onTap: _toggleSaveDevice,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: _isSaved 
-                              ? Colors.orange.withOpacity(0.2)
-                              : Colors.green.withOpacity(0.2),
-                          border: Border.all(
-                            color: _isSaved ? Colors.orange : Colors.green,
-                          ),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              _isSaved ? Icons.bookmark : Icons.bookmark_border,
-                              size: 16,
-                              color: _isSaved ? Colors.orange : Colors.green,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Text(
+                            _activeDeviceDisplayName,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              letterSpacing: 1.2,
                             ),
-                            const SizedBox(width: 4),
-                            Text(
-                              _isSaved ? 'Unsave' : 'Save',
+                          ),
+                          const SizedBox(width: 12),
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 400),
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _ble.isConnected ? Colors.greenAccent : Colors.redAccent,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: (_ble.isConnected ? Colors.green : Colors.red)
+                                      .withOpacity(0.5),
+                                  blurRadius: 6,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _ble.status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                color: _isSaved ? Colors.orange : Colors.green,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
+                                color: Colors.white.withOpacity(0.6),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        children: [
+                          // Connect/Disconnect button
+                          GestureDetector(
+                            onTap: _ble.isConnected ? _ble.disconnect : _onConnectPressed,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: _ble.isConnected
+                                      ? Colors.redAccent
+                                      : const Color(0xFF00E5FF),
+                                ),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                _ble.isConnected ? 'Disconnect' : 'Connect',
+                                style: TextStyle(
+                                  color: _ble.isConnected
+                                      ? Colors.redAccent
+                                      : const Color(0xFF00E5FF),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                          // Save/Unsave button (only show when connected)
+                          if (_ble.isConnected) ...[
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: _toggleSaveDevice,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: _isSaved
+                                      ? Colors.orange.withOpacity(0.2)
+                                      : Colors.green.withOpacity(0.2),
+                                  border: Border.all(
+                                    color: _isSaved ? Colors.orange : Colors.green,
+                                  ),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      _isSaved ? Icons.bookmark : Icons.bookmark_border,
+                                      size: 16,
+                                      color: _isSaved ? Colors.orange : Colors.green,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      _isSaved ? 'Unsave' : 'Save',
+                                      style: TextStyle(
+                                        color: _isSaved ? Colors.orange : Colors.green,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ],
-                        ),
+                        ],
                       ),
                     ),
+                  ],
+                ),
+                if (bluetoothName.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    bluetoothName,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.65),
+                      fontSize: 12,
+                    ),
                   ),
+                ],
               ],
             ),
           ),
@@ -2253,8 +2300,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
                     const SizedBox(height: 16),
                     const Text(
                       'This device needs to be activated before use.\n'
-                      'Please click the ACTIVATE button below to activate the device.\n\n'
-                      'Or access the Custom Command tab (Terminal) to proceed without activation.',
+                      'Please click the ACTIVATE button below to activate the device.\n\n',
                       style: TextStyle(
                         color: Colors.white70,
                         fontSize: 16,
