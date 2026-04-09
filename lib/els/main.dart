@@ -821,6 +821,7 @@ class _MainScreenState extends State<MainScreen> {
   bool _isSaved = false;
   bool _wasConnected = false;
   bool _isDisconnectDialogVisible = false;
+  bool _activationPopupDismissed = false;
 
   @override
   void initState() {
@@ -859,6 +860,11 @@ class _MainScreenState extends State<MainScreen> {
       });
     }
     _wasConnected = _ble.isConnected;
+
+    if (!_ble.isConnected || _ble.activationStatus == ActivationStatus.activated) {
+      _activationPopupDismissed = false;
+    }
+
     _syncPolling();
     setState(() {});
   }
@@ -1152,9 +1158,11 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isLocked = _ble.isConnected &&
-        (_ble.activationStatus == ActivationStatus.needsActivation ||
-         _ble.activationStatus == ActivationStatus.activating);
+    final showActivationGate = _ble.isConnected &&
+      (_ble.activationStatus == ActivationStatus.activating ||
+        (_ble.activationStatus == ActivationStatus.needsActivation &&
+          !_activationPopupDismissed));
+    final isLocked = showActivationGate;
 
     return Scaffold(
       body: Stack(children: [
@@ -1167,10 +1175,13 @@ class _MainScreenState extends State<MainScreen> {
             child: _buildBody(),
           ),
         ),
-        if (isLocked)
+        if (showActivationGate)
           _ActivationGate(
             ble: _ble,
             onActivatePressed: _handleActivatePressed,
+            onClose: _ble.activationStatus == ActivationStatus.needsActivation
+                ? () => setState(() => _activationPopupDismissed = true)
+                : null,
           ),
       ]),
       bottomNavigationBar: isLocked ? null : _buildBottomNav(),
@@ -1255,10 +1266,12 @@ class _MainScreenState extends State<MainScreen> {
 class _ActivationGate extends StatelessWidget {
   final BLEManager ble;
   final Future<void> Function() onActivatePressed;
+  final VoidCallback? onClose;
 
   const _ActivationGate({
     required this.ble,
     required this.onActivatePressed,
+    this.onClose,
   });
 
   @override
@@ -1280,6 +1293,17 @@ class _ActivationGate extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (onClose != null)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  IconButton(
+                    onPressed: onClose,
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    tooltip: 'Close',
+                  ),
+                ],
+              ),
             // Icon
             Icon(
               isActivating ? Icons.sync_rounded : Icons.lock_outline_rounded,

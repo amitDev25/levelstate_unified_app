@@ -135,7 +135,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     setState(() => _saving = true);
     widget.ble.sendModbusWrite(slave: 247, start: 16, values: [3]);
     for(int i = 1; i <=5; i++) {
-      Future.delayed(Duration(milliseconds: 200), () {
+      Future.delayed(Duration(milliseconds: 1700 + i * 200), () {
         if (mounted) widget.ble.sendModbusWrite(slave: 247, start: 16, values: [1]);
       });
     }
@@ -348,7 +348,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
             const SizedBox(height: 14),
 
             _FormCard(
-              title: 'Conductivity Sensitive',
+              title: 'Conductivity (µ Siemens)',
               child: DropdownButtonFormField<String>(
                 value: _conductivityValue,
                 items: const [
