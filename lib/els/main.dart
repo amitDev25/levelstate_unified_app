@@ -413,7 +413,7 @@ class BLEManager extends ChangeNotifier {
   // ─────────────────────────────────────────────────────────────
   Future<void> activateDevice() async {
     if (_reg87Data.isEmpty) {
-      activationMessage = 'No device data available (reg 87 empty)';
+      activationMessage = 'No device data available ';
       activationError   = true;
       notifyListeners();
       return;
@@ -430,13 +430,14 @@ class BLEManager extends ChangeNotifier {
       
       // ── Java: swapBytes(storedRegister87Data) then POST ──
       final swapped = _swapBytes(_reg87Data);
-      logs.add('Posting to HMAC API, hex: $swapped, location: $location');
+      final deviceIdForApi = swapped.toUpperCase();
+      logs.add('Posting to HMAC API, hex: $deviceIdForApi, location: $location');
 
       final response = await http.post(
         Uri.parse(hmacApiUrl),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'device_id': swapped,
+          'device_id': deviceIdForApi,
           'bluetooth_name': (_device?.remoteId.toString() ?? 'unknown'),
           'location': "http://www.google.com/maps/search/?api=1&query="+location,
         }),
@@ -1433,137 +1434,127 @@ class _BLEHeaderState extends State<BLEHeader> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // First row: title + status + action buttons
+          // Title on top
           Row(
             children: [
-              Expanded(
-                child: Row(
-                  children: [
-                    Text(widget.title,
-                        style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            letterSpacing: 1.2)),
-                    const SizedBox(width: 12),
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 400),
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: widget.ble.isConnected ? Colors.greenAccent : Colors.redAccent,
-                        boxShadow: [
-                          BoxShadow(
-                              color: (widget.ble.isConnected ? Colors.green : Colors.red)
-                                  .withOpacity(0.5),
-                              blurRadius: 6)
-                        ],
-                      ),
+              Text(widget.title,
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold,
+                      color: Colors.white, letterSpacing: 1.2)),
+              if (widget.title == 'ELS' && bluetoothName.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    bluetoothName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.white.withOpacity(0.65),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(widget.ble.status,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              color: Colors.white.withOpacity(0.6), fontSize: 13)),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Row(
-                  children: [
-                    GestureDetector(
-                      onTap: () {
-                        if (widget.ble.isConnected) {
-                          widget.ble.disconnectManual();
-                        } else {
-                          _showDeviceSelector(context);
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                              color: widget.ble.isConnected
-                                  ? Colors.redAccent
-                                  : const Color(0xFF00E5FF)),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          widget.ble.isConnected
-                              ? 'Disconnect'
-                              : (widget.ble.isScanning
-                                  ? 'Scanning...'
-                                  : (widget.ble.scannedDevices.isNotEmpty ? 'Select Device' : 'Scan')),
-                          style: TextStyle(
-                              color: widget.ble.isConnected
-                                  ? Colors.redAccent
-                                  : const Color(0xFF00E5FF),
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
-                    if (widget.ble.isConnected &&
-                        widget.ble.activationStatus == ActivationStatus.activated &&
-                        widget.onToggleSave != null &&
-                        widget.isSaved != null) ...[
-                      const SizedBox(width: 8),
-                      GestureDetector(
-                        onTap: widget.onToggleSave,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: widget.isSaved!
-                                ? Colors.orange.withOpacity(0.2)
-                                : Colors.green.withOpacity(0.2),
-                            border: Border.all(
-                              color: widget.isSaved! ? Colors.orange : Colors.green,
-                            ),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                widget.isSaved! ? Icons.bookmark : Icons.bookmark_border,
-                                size: 16,
-                                color: widget.isSaved! ? Colors.orange : Colors.green,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                widget.isSaved! ? 'Unsave' : 'Save',
-                                style: TextStyle(
-                                  color: widget.isSaved! ? Colors.orange : Colors.green,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
+              ],
             ],
           ),
-          if (bluetoothName.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              bluetoothName,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.65),
-                fontSize: 12,
+          const SizedBox(height: 12),
+          // Status and button on second row
+          Row(children: [
+            // Status dot
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 400),
+              width: 8, height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: widget.ble.isConnected ? Colors.greenAccent : Colors.redAccent,
+                boxShadow: [BoxShadow(
+                    color: (widget.ble.isConnected ? Colors.green : Colors.red)
+                        .withOpacity(0.5),
+                    blurRadius: 6)],
               ),
             ),
-          ],
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(widget.ble.status,
+                  style: TextStyle(
+                      color: Colors.white.withOpacity(0.6), fontSize: 13)),
+            ),
+            const SizedBox(width: 12),
+            // Connect / Disconnect button
+            GestureDetector(
+              onTap: () {
+                if (widget.ble.isConnected) {
+                  widget.ble.disconnectManual();
+                } else {
+                  _showDeviceSelector(context);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                      color: widget.ble.isConnected
+                          ? Colors.redAccent
+                          : const Color(0xFF00E5FF)),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  widget.ble.isConnected 
+                      ? 'Disconnect' 
+                      : (widget.ble.isScanning 
+                          ? 'Scanning...' 
+                          : (widget.ble.scannedDevices.isNotEmpty ? 'Select Device' : 'Scan')),
+                  style: TextStyle(
+                      color: widget.ble.isConnected
+                          ? Colors.redAccent
+                          : const Color(0xFF00E5FF),
+                      fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+            // Save/Unsave button (only show when connected and activated)
+            if (widget.ble.isConnected && 
+                widget.ble.activationStatus == ActivationStatus.activated &&
+                widget.onToggleSave != null &&
+                widget.isSaved != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: GestureDetector(
+                  onTap: widget.onToggleSave,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: widget.isSaved! 
+                          ? Colors.orange.withOpacity(0.2)
+                          : Colors.green.withOpacity(0.2),
+                      border: Border.all(
+                        color: widget.isSaved! ? Colors.orange : Colors.green,
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          widget.isSaved! ? Icons.bookmark : Icons.bookmark_border,
+                          size: 16,
+                          color: widget.isSaved! ? Colors.orange : Colors.green,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          widget.isSaved! ? 'Unsave' : 'Save',
+                          style: TextStyle(
+                            color: widget.isSaved! ? Colors.orange : Colors.green,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ]),
         ],
       ),
     );
@@ -1868,7 +1859,7 @@ class _CustomCommandScreenState extends State<CustomCommandScreen> {
     return Column(children: [
       BLEHeader(
         ble: widget.ble, 
-        title: 'ELS',
+        title: 'CUSTOM COMMAND',
         isSaved: widget.isSaved,
         onToggleSave: widget.onToggleSave,
       ),

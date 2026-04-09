@@ -26,7 +26,7 @@ class ConfigScreen extends StatefulWidget {
 }
 
 class _ConfigScreenState extends State<ConfigScreen> {
-  final _conductivityCtrl = TextEditingController();
+  String? _conductivityValue;
   final _faultDelayCtrl   = TextEditingController();
   String _shortCircuit       = 'No';
   String _openCircuit        = 'No';
@@ -58,7 +58,6 @@ class _ConfigScreenState extends State<ConfigScreen> {
   @override
   void dispose() {
     widget.ble.removeListener(_onBLENotify);
-    _conductivityCtrl.dispose();
     _faultDelayCtrl.dispose();
     super.dispose();
   }
@@ -110,10 +109,10 @@ class _ConfigScreenState extends State<ConfigScreen> {
       // Conductivity (reg 42)
       final condValue = getRegisterValue(42);
       switch (condValue) {
-        case 1105: _conductivityCtrl.text = '0.5'; break;
-        case 795:  _conductivityCtrl.text = '1';   break;
-        case 534:  _conductivityCtrl.text = '2';   break;
-        default:   _conductivityCtrl.text = '$condValue';  break;
+        case 1105: _conductivityValue = '0.5'; break;
+        case 795:  _conductivityValue = '1';   break;
+        case 534:  _conductivityValue = '2';   break;
+        default:   _conductivityValue = null;  break;
       }
 
       // Contamination (reg 47)
@@ -150,6 +149,41 @@ class _ConfigScreenState extends State<ConfigScreen> {
     widget.ble.logs.add('=== Factory Reset ===');
   }
 
+  void _deactivateDevice() {
+    setState(() => _writing = true);
+    widget.ble.logs.add('=== Deactivate Device ===');
+    widget.ble.logs.add('Writing 0 to reg 93-108');
+
+    const int chunkSize = 5; // keep BLE packet within characteristic write limit
+    final List<int> allValues = List.filled(16, 0);
+    int offset = 0;
+    int delayMs = 0;
+
+    while (offset < allValues.length) {
+      final chunkEnd = (offset + chunkSize) > allValues.length
+          ? allValues.length
+          : (offset + chunkSize);
+      final chunk = allValues.sublist(offset, chunkEnd);
+      final startReg = 93 + offset;
+
+      Future.delayed(Duration(milliseconds: delayMs), () {
+        if (!mounted) return;
+        widget.ble.sendModbusWrite(
+          slave: 247,
+          start: startReg,
+          values: chunk,
+        );
+      });
+
+      offset = chunkEnd;
+      delayMs += 200;
+    }
+
+    Future.delayed(Duration(milliseconds: delayMs + 400), () {
+      if (mounted) setState(() => _writing = false);
+    });
+  }
+
   void _writeToDevice() {
     setState(() => _writing = true);
 
@@ -169,16 +203,39 @@ class _ConfigScreenState extends State<ConfigScreen> {
     }
 
     // Conductivity (reg 42-45)
-    final condText = _conductivityCtrl.text.trim();
+    final condText = _conductivityValue?.trim() ?? '';
     if (condText.isNotEmpty) {
       int cv;
+      int? cvLowRange;
       switch (condText) {
-        case '0.5': cv = 1105; break;
-        case '1':   cv = 795;  break;
-        case '2':   cv = 534;  break;
+        case '0.5':
+          cv = 1105;
+          cvLowRange = 1171;
+          break;
+        case '1':
+          cv = 795;
+          cvLowRange = 875;
+          break;
+        case '2':
+          cv = 534;
+          cvLowRange = 600;
+          break;
         default:    cv = int.tryParse(condText) ?? 0; break;
       }
       if (cv > 0) {
+        if (cvLowRange != null) {
+          Future.delayed(Duration(milliseconds: delayMs), () {
+            if (!mounted) return;
+            widget.ble.logs.add('[2] Conductivity low range: $condText → reg 38-41');
+            widget.ble.sendModbusWrite(
+              slave: 247,
+              start: 38,
+              values: [cvLowRange!, cvLowRange!, cvLowRange!, cvLowRange!],
+            );
+          });
+          delayMs += 300;
+        }
+
         Future.delayed(Duration(milliseconds: delayMs), () {
           if (!mounted) return;
           widget.ble.logs.add('[2] Conductivity: $condText → reg 42-45');
@@ -292,10 +349,18 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
             _FormCard(
               title: 'Conductivity Sensitive',
-              child: TextField(
-                controller: _conductivityCtrl,
+              child: DropdownButtonFormField<String>(
+                value: _conductivityValue,
+                items: const [
+                  DropdownMenuItem(value: '0.5', child: Text('0.5')),
+                  DropdownMenuItem(value: '1', child: Text('1')),
+                  DropdownMenuItem(value: '2', child: Text('2')),
+                ],
+                onChanged: (value) => setState(() => _conductivityValue = value),
+                hint: const Text('Select'),
                 style: const TextStyle(color: Colors.white),
-                decoration: _fd('Value'),
+                dropdownColor: const Color(0xFF1A1A2E),
+                decoration: _fd('Select'),
               ),
             ),
             const SizedBox(height: 10),
@@ -386,6 +451,22 @@ class _ConfigScreenState extends State<ConfigScreen> {
                 ),
               ),
             ]),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _writing ? null : _deactivateDevice,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.redAccent,
+                  side: const BorderSide(color: Colors.redAccent),
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+                child: const Text('Deactivate',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
             const SizedBox(height: 16),
           ]),
         ),
