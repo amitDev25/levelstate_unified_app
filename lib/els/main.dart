@@ -852,13 +852,21 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _onBLEUpdate() {
-    if (_wasConnected && !_ble.isConnected && !_isDisconnectDialogVisible) {
+    final wasConnected = _wasConnected;
+
+    if (wasConnected && !_ble.isConnected && !_isDisconnectDialogVisible) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _showDisconnectDialog();
         }
       });
     }
+
+    // Fresh reconnect: allow activation popup to show again if needed.
+    if (!wasConnected && _ble.isConnected) {
+      _activationPopupDismissed = false;
+    }
+
     _wasConnected = _ble.isConnected;
 
     if (!_ble.isConnected || _ble.activationStatus == ActivationStatus.activated) {

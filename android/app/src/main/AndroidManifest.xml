@@ -16,7 +16,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     
     <application
-        android:label="levelstate_els_edli"
+        android:label="Levelstate Programmer"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon">
         <activity

@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "levelstate_els_edli" "\0"
+            VALUE "FileDescription", "Levelstate Programmer" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "levelstate_els_edli" "\0"
+            VALUE "InternalName", "Levelstate Programmer" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
             VALUE "OriginalFilename", "levelstate_els_edli.exe" "\0"
-            VALUE "ProductName", "levelstate_els_edli" "\0"
+            VALUE "ProductName", "Levelstate Programmer" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

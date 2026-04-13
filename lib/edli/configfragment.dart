@@ -835,7 +835,7 @@ class _ConfigFragmentState extends State<ConfigFragment> {
                     )
                   : const Icon(Icons.settings, color: Colors.black, size: 20),
               label: Text(
-                _isLoading ? 'Loading Config...' : 'Load Configuration',
+                _isLoading ? 'Loading Config...' : 'Refresh Configuration',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -854,76 +854,74 @@ class _ConfigFragmentState extends State<ConfigFragment> {
           
           const SizedBox(height: 12),
           
-          // Write button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && !_isSaving && _registerData.isNotEmpty
-                  ? _writeCommand
-                  : null,
-              icon: _isWriting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  : const Icon(Icons.edit, color: Colors.black, size: 20),
-              label: Text(
-                _isWriting ? 'Writing...' : 'Write to Device',
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isWriting && !_isSaving && _registerData.isNotEmpty
+                      ? _writeCommand
+                      : null,
+                  icon: _isWriting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.edit, color: Colors.black, size: 20),
+                  label: Text(
+                    _isWriting ? 'Writing...' : 'Write to Device',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF6B35),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFF6B35),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isWriting && !_isSaving && _writeCompleted
+                      ? _saveCommand
+                      : null,
+                  icon: _isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.save, color: Colors.black, size: 20),
+                  label: Text(
+                    _isSaving ? 'Saving...' : 'Save',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _writeCompleted ? const Color(0xFF4CAF50) : Colors.grey,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-          
-          const SizedBox(height: 12),
-          
-          // Save button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && !_isSaving && _writeCompleted
-                  ? _saveCommand
-                  : null,
-              icon: _isSaving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  : const Icon(Icons.save, color: Colors.black, size: 20),
-              label: Text(
-                _isSaving ? 'Saving...' : 'Save Configuration',
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _writeCompleted ? const Color(0xFF4CAF50) : Colors.grey,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
+            ],
           ),
           
           const SizedBox(height: 20),

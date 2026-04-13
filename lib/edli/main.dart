@@ -2139,6 +2139,7 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
           Expanded(
             child: TabBarView(
                 controller: _tabController,
+                physics: const NeverScrollableScrollPhysics(),
                 children: [
                   LedStatusFragment(
                     bleManager: _ble,

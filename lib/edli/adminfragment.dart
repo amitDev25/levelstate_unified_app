@@ -38,6 +38,7 @@ class _AdminFragmentState extends State<AdminFragment> {
   bool _isWriting = false;
   bool _isSaving = false;
   bool _isResetting = false;
+  bool _isDeactivating = false;
   bool _is4mAMode = false;
   bool _is20mAMode = false;
   
@@ -635,12 +636,80 @@ class _AdminFragmentState extends State<AdminFragment> {
     }
   }
 
+  void _deactivateDevice() async {
+    if (!widget.bleManager.isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Not connected to device')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isDeactivating = true;
+    });
+
+    try {
+      widget.bleManager.logs.add('=== Deactivate Sequence Started ===');
+
+      // Step 1: Write 0 from reg 95 to 110 (chunked for BLE packet safety)
+      const int startReg = 95;
+      const int endReg = 110;
+      const int chunkSize = 5;
+
+      for (int reg = startReg; reg <= endReg; reg += chunkSize) {
+        final remaining = endReg - reg + 1;
+        final count = remaining >= chunkSize ? chunkSize : remaining;
+
+        await widget.bleManager.writeRegisters(
+          startRegister: reg,
+          values: List.filled(count, 0),
+        );
+
+        await Future.delayed(const Duration(milliseconds: 150));
+      }
+
+      // Step 2: Write 2 to reg 0
+      await widget.bleManager.writeRegisters(startRegister: 0, values: [2]);
+
+      // Step 3: Wait for reg 0 to become 0
+      final ready = await _waitForRegister0ToBeZero();
+      if (!ready) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Deactivate timeout - register 0 did not become 0')),
+          );
+        }
+        return;
+      }
+
+      widget.bleManager.logs.add('=== Deactivate Sequence Completed ===');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Deactivation completed successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deactivation failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDeactivating = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
       color: const Color(0xFF0D0D1A),
       padding: const EdgeInsets.all(16),
-      child: Column(
+      child: ListView(
         children: [
           // Mode buttons row
           Row(
@@ -737,7 +806,7 @@ class _AdminFragmentState extends State<AdminFragment> {
           
           const SizedBox(height: 16),
           
-          // Send button
+          // Row 1: Refresh button
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
@@ -755,7 +824,7 @@ class _AdminFragmentState extends State<AdminFragment> {
                     )
                   : const Icon(Icons.send, color: Colors.black, size: 20),
               label: Text(
-                _isLoading ? 'Loading Admin Data...' : 'Load Admin Data',
+                _isLoading ? 'Refreshing...' : 'Refresh',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -774,223 +843,252 @@ class _AdminFragmentState extends State<AdminFragment> {
           
           const SizedBox(height: 12),
           
-          // Write button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && _registerData.isNotEmpty
-                  ? _writeCommand
-                  : null,
-              icon: _isWriting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  : const Icon(Icons.edit, color: Colors.black, size: 20),
-              label: Text(
-                _isWriting ? 'Writing...' : 'Write to Device',
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+          // Row 2: Write + Save
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isWriting && _registerData.isNotEmpty
+                      ? _writeCommand
+                      : null,
+                  icon: _isWriting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.edit, color: Colors.black, size: 20),
+                  label: Text(
+                    _isWriting ? 'Writing...' : 'Write to Device',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF6B35),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFF6B35),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isSaving
+                      ? _saveCommand
+                      : null,
+                  icon: _isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.save, color: Colors.black, size: 20),
+                  label: Text(
+                    _isSaving ? 'Saving...' : 'Save',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4CAF50),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
-          
+
           const SizedBox(height: 12),
-          
-          // Save button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isSaving
-                  ? _saveCommand
-                  : null,
-              icon: _isSaving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  : const Icon(Icons.save, color: Colors.black, size: 20),
-              label: Text(
-                _isSaving ? 'Saving...' : 'Save Configuration',
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+
+          // Row 3: Factory Reset + Deactivate
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isResetting
+                      ? _factoryReset
+                      : null,
+                  icon: _isResetting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.restore, color: Colors.white, size: 20),
+                  label: Text(
+                    _isResetting ? 'Resetting...' : 'Factory Reset',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF4CAF50),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isDeactivating
+                      ? _deactivateDevice
+                      : null,
+                  icon: _isDeactivating
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.block, color: Colors.white, size: 20),
+                  label: Text(
+                    _isDeactivating ? 'Deactivating...' : 'Deactivate',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepOrange,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-          
-          const SizedBox(height: 12),
-          
-          // Factory Reset button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isResetting
-                  ? _factoryReset
-                  : null,
-              icon: _isResetting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Icon(Icons.restore, color: Colors.white, size: 20),
-              label: Text(
-                _isResetting ? 'Resetting...' : 'Factory Reset',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
+            ],
           ),
           
           const SizedBox(height: 20),
           
           // Values in two separate cards
-          Expanded(
-            child: ListView(
+          // Card 1: Water Level, Steam Level, and Short Level
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF00E5FF).withOpacity(0.3),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Card 1: Water Level, Steam Level, and Short Level
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1A1A2E),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: const Color(0xFF00E5FF).withOpacity(0.3),
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Level Settings',
-                        style: TextStyle(
-                          color: Color(0xFF00E5FF),
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildEditableField(
-                              'Water Level',
-                              _alwaysEditableFields.contains('Water Level'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildEditableField(
-                              'Steam Level',
-                              _alwaysEditableFields.contains('Steam Level'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildEditableField(
-                              'Short Level',
-                              _alwaysEditableFields.contains('Short Level'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                const Text(
+                  'Level Settings',
+                  style: TextStyle(
+                    color: Color(0xFF00E5FF),
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                
                 const SizedBox(height: 16),
-                
-                // Card 2: Channel Calibration
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1A1A2E),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: const Color(0xFF00E5FF).withOpacity(0.3),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildEditableField(
+                        'Water Level',
+                        _alwaysEditableFields.contains('Water Level'),
+                      ),
                     ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Channel Calibration',
-                        style: TextStyle(
-                          color: Color(0xFF00E5FF),
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildEditableField(
+                        'Steam Level',
+                        _alwaysEditableFields.contains('Steam Level'),
                       ),
-                      const SizedBox(height: 16),
-                      GridView.count(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        crossAxisCount: 2,
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
-                        childAspectRatio: 1.3,
-                        children: [
-                          _buildEditableField(
-                            '4mA Channel 1 Value',
-                            _is4mAMode && _4mAFields.contains('4mA Channel 1 Value'),
-                          ),
-                          _buildEditableField(
-                            '20mA Channel 1 Value',
-                            _is20mAMode && _20mAFields.contains('20mA Channel 1 Value'),
-                          ),
-                          _buildEditableField(
-                            '4mA Channel 2 Value',
-                            _is4mAMode && _4mAFields.contains('4mA Channel 2 Value'),
-                          ),
-                          _buildEditableField(
-                            '20mA Channel 2 Value',
-                            _is20mAMode && _20mAFields.contains('20mA Channel 2 Value'),
-                          ),
-                        ],
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildEditableField(
+                        'Short Level',
+                        _alwaysEditableFields.contains('Short Level'),
                       ),
-                    ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Card 2: Channel Calibration
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(0xFF00E5FF).withOpacity(0.3),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Channel Calibration',
+                  style: TextStyle(
+                    color: Color(0xFF00E5FF),
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
+                ),
+                const SizedBox(height: 16),
+                GridView.count(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  crossAxisCount: 2,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  childAspectRatio: 1.3,
+                  children: [
+                    _buildEditableField(
+                      '4mA Channel 1 Value',
+                      _is4mAMode && _4mAFields.contains('4mA Channel 1 Value'),
+                    ),
+                    _buildEditableField(
+                      '20mA Channel 1 Value',
+                      _is20mAMode && _20mAFields.contains('20mA Channel 1 Value'),
+                    ),
+                    _buildEditableField(
+                      '4mA Channel 2 Value',
+                      _is4mAMode && _4mAFields.contains('4mA Channel 2 Value'),
+                    ),
+                    _buildEditableField(
+                      '20mA Channel 2 Value',
+                      _is20mAMode && _20mAFields.contains('20mA Channel 2 Value'),
+                    ),
+                  ],
                 ),
               ],
             ),

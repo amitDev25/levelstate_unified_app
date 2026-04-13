@@ -565,7 +565,7 @@ class _SettingFragmentState extends State<SettingFragment> {
                     )
                   : const Icon(Icons.tune, color: Colors.black, size: 20),
               label: Text(
-                _isLoading ? 'Loading Settings...' : 'Load Channel Settings',
+                _isLoading ? 'Loading Settings...' : 'Refresh Channel Settings',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
@@ -584,78 +584,77 @@ class _SettingFragmentState extends State<SettingFragment> {
           
           const SizedBox(height: 12),
           
-          // Write button (writes data + reg 0 = 2)
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isWriting && _channels.isNotEmpty
-                  ? _writeCommand
-                  : null,
-              icon: _isWriting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  : const Icon(Icons.edit, color: Colors.black, size: 20),
-              label: Text(
-                _isWriting ? 'Writing...' : 'Write to Device',
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+          // Write + Save buttons in one row
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isWriting && _channels.isNotEmpty
+                      ? _writeCommand
+                      : null,
+                  icon: _isWriting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.edit, color: Colors.black, size: 20),
+                  label: Text(
+                    _isWriting ? 'Writing...' : 'Write to Device',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF6B35),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFF6B35),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: widget.bleManager.isConnected && !_isSaving && _writeCompleted
+                      ? _saveCommand
+                      : null,
+                  icon: _isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Icon(Icons.save, color: Colors.black, size: 20),
+                  label: Text(
+                    _isSaving ? 'Saving...' : 'Save',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _writeCompleted
+                        ? Colors.green
+                        : Colors.grey,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-          
-          const SizedBox(height: 12),
-          
-          // Save button (writes reg 0 = 5, enabled after write)
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.bleManager.isConnected && !_isSaving && _writeCompleted
-                  ? _saveCommand
-                  : null,
-              icon: _isSaving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.black,
-                      ),
-                    )
-                  : const Icon(Icons.save, color: Colors.black, size: 20),
-              label: Text(
-                _isSaving ? 'Saving...' : 'Save Configuration',
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _writeCompleted 
-                    ? Colors.green 
-                    : Colors.grey,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
+            ],
           ),
           
           const SizedBox(height: 20),

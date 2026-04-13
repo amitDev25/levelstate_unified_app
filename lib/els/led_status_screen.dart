@@ -140,7 +140,6 @@ class _LEDStatusScreenState extends State<LEDStatusScreen> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         const _LEDLabel('SF'),
-                        const SizedBox(width: 12),
                         _LEDCell(
                           key: ValueKey('sf_${ble.ledRegisters[9]}'),
                           value: ble.ledRegisters[9],
@@ -157,12 +156,12 @@ class _LEDStatusScreenState extends State<LEDStatusScreen> {
                       ],
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 10),
 
                     // Channel rows 4 → 1
                     for (int row = 0; row < 4; row++) ...[
                       Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        padding: const EdgeInsets.symmetric(vertical: 4),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
