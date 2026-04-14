@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'main.dart' show BLEManager, BLEHeader;
@@ -38,6 +39,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   // Tracks the rxFrameCount we last handled so we fire handleRX exactly
   // once per new frame — dart equivalent of Swift's onReceive(ble.$lastRXFrame).
   int  _lastHandledRxCount = 0;
+  int? _pendingReg42Value;
   
   // Bulk read: registers 33-63 (qty 31) - covers all config registers
   static const int _bulkReadStart = 33;
@@ -76,6 +78,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   // ── Optimized bulk read: single command reads all config registers ──
   void _startSequentialRead() {
     _lastHandledRxCount = widget.ble.rxFrameCount; // ignore any stale frame
+    _pendingReg42Value = null;
     if (mounted) setState(() => _isReading = true);
     // Read registers 33-63 (qty 31) in one command
     widget.ble.sendModbus(slave: 247, function: 3, start: _bulkReadStart, qty: _bulkReadQty);
@@ -84,51 +87,77 @@ class _ConfigScreenState extends State<ConfigScreen> {
   // ── Handle bulk RX response: parse all registers at once ──
   void _handleRX(Uint8List frame) {
     if (frame.length < 3) return;
-    
+
     // Modbus response: [slave][function][byteCount][data...][crc][crc]
-    // Expected byteCount = 31 registers × 2 bytes = 62 bytes
     final byteCount = frame[2];
-    if (byteCount != _bulkReadQty * 2 || frame.length < 3 + byteCount) {
+    if (frame.length < 3 + byteCount) {
       if (mounted) setState(() => _isReading = false);
       return;
     }
 
-    // Helper to extract a 16-bit value at a specific register offset
-    int getRegisterValue(int regNum) {
-      final offset = (regNum - _bulkReadStart) * 2 + 3;
-      if (offset + 1 >= frame.length) return 0;
-      return (frame[offset] << 8) | frame[offset + 1];
-    }
-
-    // Parse all values from the single response
-    setState(() {
-      // Fault Delay (reg 33)
-      final fdValue = getRegisterValue(33);
-      _faultDelayCtrl.text = '${fdValue ~/ 100}';
-
-      // Conductivity (reg 42)
-      final condValue = getRegisterValue(42);
-      switch (condValue) {
-        case 1105: _conductivityValue = '0.5'; break;
-        case 795:  _conductivityValue = '1';   break;
-        case 534:  _conductivityValue = '2';   break;
-        default:   _conductivityValue = null;  break;
+    // Stage 1: Bulk response for registers 33-63
+    if (byteCount == _bulkReadQty * 2) {
+      int getRegisterValue(int regNum) {
+        final offset = (regNum - _bulkReadStart) * 2 + 3;
+        if (offset + 1 >= frame.length) return 0;
+        return (frame[offset] << 8) | frame[offset + 1];
       }
 
-      // Contamination (reg 47)
-      _contamination = getRegisterValue(47) == 0 ? 'No' : 'No';
+      setState(() {
+        // Fault Delay (reg 33)
+        final fdValue = getRegisterValue(33);
+        _faultDelayCtrl.text = '${fdValue ~/ 100}';
 
-      // Open Circuit (reg 54) & Short Circuit (reg 58)
-      final openVal  = getRegisterValue(54);
-      final shortVal = getRegisterValue(58);
-      _openCircuit  = openVal  == 50 ? 'Yes' : 'No';
-      _shortCircuit = shortVal == 10 ? 'Yes' : 'No';
+        // Save reg 42 temporarily; final mapping set after reading 109-111
+        _pendingReg42Value = getRegisterValue(42);
 
-      // Vertical Validation (reg 63)
-      _verticalValidation = getRegisterValue(63) == 1 ? 'Yes' : 'No';
+        // Contamination (reg 47)
+        _contamination = getRegisterValue(47) == 0 ? 'No' : 'No';
 
-      _isReading = false;
-    });
+        // Open Circuit (reg 54) & Short Circuit (reg 58)
+        final openVal  = getRegisterValue(54);
+        final shortVal = getRegisterValue(58);
+        _openCircuit  = openVal  == 50 ? 'Yes' : 'No';
+        _shortCircuit = shortVal == 10 ? 'Yes' : 'No';
+
+        // Vertical Validation (reg 63)
+        _verticalValidation = getRegisterValue(63) == 1 ? 'Yes' : 'No';
+      });
+
+      // Stage 2 read: compare reg 42 with reg 109/110/111
+      widget.ble.sendModbus(slave: 247, function: 3, start: 109, qty: 3);
+      return;
+    }
+
+    // Stage 2 response for registers 109-111 (3 regs = 6 bytes)
+    if (byteCount == 6) {
+      final reg109 = (frame[3] << 8) | frame[4];
+      final reg110 = (frame[5] << 8) | frame[6];
+      final reg111 = (frame[7] << 8) | frame[8];
+      final condValue = _pendingReg42Value;
+
+      setState(() {
+        if (condValue != null && condValue == reg109) {
+          _conductivityValue = '0.5';
+        } else if (condValue != null && condValue == reg110) {
+          _conductivityValue = '1';
+        } else if (condValue != null && condValue == reg111) {
+          _conductivityValue = '2';
+        } else {
+          _conductivityValue = null;
+        }
+        _pendingReg42Value = null;
+        _isReading = false;
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _pendingReg42Value = null;
+        _isReading = false;
+      });
+    }
   }
 
   void _saveConfiguration() {
@@ -184,7 +213,37 @@ class _ConfigScreenState extends State<ConfigScreen> {
     });
   }
 
-  void _writeToDevice() {
+  Future<int?> _readSingleRegister(int reg,
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    final completer = Completer<int?>();
+    int observedRxCount = widget.ble.rxFrameCount;
+
+    late VoidCallback listener;
+    listener = () {
+      if (widget.ble.rxFrameCount == observedRxCount) return;
+      observedRxCount = widget.ble.rxFrameCount;
+
+      final frame = widget.ble.lastRXFrame;
+      if (frame.length < 7) return;
+      if (frame[0] != 247 || frame[1] != 3 || frame[2] != 2) return;
+
+      final value = (frame[3] << 8) | frame[4];
+      if (!completer.isCompleted) completer.complete(value);
+      widget.ble.removeListener(listener);
+    };
+
+    widget.ble.addListener(listener);
+    widget.ble.sendModbus(slave: 247, function: 3, start: reg, qty: 1);
+
+    try {
+      return await completer.future.timeout(timeout);
+    } on TimeoutException {
+      widget.ble.removeListener(listener);
+      return null;
+    }
+  }
+
+  Future<void> _writeToDevice() async {
     setState(() => _writing = true);
 
     widget.ble.logs.add('=== Starting Config Write ===');
@@ -205,40 +264,51 @@ class _ConfigScreenState extends State<ConfigScreen> {
     // Conductivity (reg 42-45)
     final condText = _conductivityValue?.trim() ?? '';
     if (condText.isNotEmpty) {
-      int cv;
-      int? cvLowRange;
+      int? sourceReg;
       switch (condText) {
         case '0.5':
-          cv = 1105;
-          cvLowRange = 1171;
+          sourceReg = 109;
           break;
         case '1':
-          cv = 795;
-          cvLowRange = 875;
+          sourceReg = 110;
           break;
         case '2':
-          cv = 534;
-          cvLowRange = 600;
+          sourceReg = 111;
           break;
-        default:    cv = int.tryParse(condText) ?? 0; break;
+        default:
+          sourceReg = null;
+          break;
       }
-      if (cv > 0) {
-        if (cvLowRange != null) {
-          Future.delayed(Duration(milliseconds: delayMs), () {
-            if (!mounted) return;
-            widget.ble.logs.add('[2] Conductivity low range: $condText → reg 38-41');
-            widget.ble.sendModbusWrite(
-              slave: 247,
-              start: 38,
-              values: [cvLowRange!, cvLowRange!, cvLowRange!, cvLowRange!],
-            );
-          });
-          delayMs += 300;
+
+      int cv = int.tryParse(condText) ?? 0;
+      if (sourceReg != null) {
+        widget.ble.logs.add('[2] Reading conductivity source from reg $sourceReg');
+        final readValue = await _readSingleRegister(sourceReg);
+        if (readValue == null) {
+          widget.ble.logs.add('[2] ERROR: Failed to read reg $sourceReg');
+        } else {
+          cv = readValue;
+          widget.ble.logs.add('[2] Read reg $sourceReg = $cv');
         }
+      }
+
+      if (cv > 0) {
+        final cvLowRange = ((((cv / 14) + 10) * (1400 / 100))).round();
 
         Future.delayed(Duration(milliseconds: delayMs), () {
           if (!mounted) return;
-          widget.ble.logs.add('[2] Conductivity: $condText → reg 42-45');
+          widget.ble.logs.add('[2] Conductivity formula value: $cvLowRange → reg 38-41');
+          widget.ble.sendModbusWrite(
+            slave: 247,
+            start: 38,
+            values: [cvLowRange, cvLowRange, cvLowRange, cvLowRange],
+          );
+        });
+        delayMs += 300;
+
+        Future.delayed(Duration(milliseconds: delayMs), () {
+          if (!mounted) return;
+          widget.ble.logs.add('[2] Conductivity: $cv (from $condText selection) → reg 42-45');
           widget.ble.sendModbusWrite(slave: 247, start: 42, values: [cv, cv, cv, cv]);
         });
         delayMs += 300;
