@@ -118,7 +118,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
         final openVal  = getRegisterValue(54);
         final shortVal = getRegisterValue(58);
         _openCircuit  = openVal  == 50 ? 'Yes' : 'No';
-        _shortCircuit = shortVal == 10 ? 'Yes' : 'No';
+        _shortCircuit = shortVal == 8 ? 'Yes' : 'No';
 
         // Vertical Validation (reg 63)
         _verticalValidation = getRegisterValue(63) == 1 ? 'Yes' : 'No';
@@ -234,6 +234,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
     widget.ble.addListener(listener);
     widget.ble.sendModbus(slave: 247, function: 3, start: reg, qty: 1);
+    await Future.delayed(const Duration(milliseconds: 220));
 
     try {
       return await completer.future.timeout(timeout);
@@ -249,17 +250,6 @@ class _ConfigScreenState extends State<ConfigScreen> {
     widget.ble.logs.add('=== Starting Config Write ===');
 
     int delayMs = 0;
-
-    // Fault delay (reg 33)
-    final dv = int.tryParse(_faultDelayCtrl.text.trim());
-    if (dv != null) {
-      Future.delayed(Duration(milliseconds: delayMs), () {
-        if (!mounted) return;
-        widget.ble.logs.add('[1] Fault Delay: ${dv * 100}ms → reg 33');
-        widget.ble.sendModbusWrite(slave: 247, start: 33, values: [dv * 100]);
-      });
-      delayMs += 300;
-    }
 
     // Conductivity (reg 42-45)
     final condText = _conductivityValue?.trim() ?? '';
@@ -293,7 +283,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
       }
 
       if (cv > 0) {
-        final cvLowRange = ((((cv / 14) + 10) * (1400 / 100))).round();
+        final cvLowRange = cv+20;
 
         Future.delayed(Duration(milliseconds: delayMs), () {
           if (!mounted) return;
@@ -315,6 +305,17 @@ class _ConfigScreenState extends State<ConfigScreen> {
       }
     }
 
+    // Fault delay (reg 33) - keep after conductivity read to avoid read/write collision
+    final dv = int.tryParse(_faultDelayCtrl.text.trim());
+    if (dv != null) {
+      Future.delayed(Duration(milliseconds: delayMs), () {
+        if (!mounted) return;
+        widget.ble.logs.add('[1] Fault Delay: ${dv * 100}ms → reg 33');
+        widget.ble.sendModbusWrite(slave: 247, start: 33, values: [dv * 100]);
+      });
+      delayMs += 300;
+    }
+
     // Contamination (reg 47)
     Future.delayed(Duration(milliseconds: delayMs), () {
       if (!mounted) return;
@@ -334,7 +335,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     delayMs += 300;
 
     // Short circuit (reg 58-61)
-    final sv = _shortCircuit == 'Yes' ? 10 : 0;
+    final sv = _shortCircuit == 'Yes' ? 8 : 0;
     Future.delayed(Duration(milliseconds: delayMs), () {
       if (!mounted) return;
       widget.ble.logs.add('[5] Short Circuit: $_shortCircuit → reg 58-61');

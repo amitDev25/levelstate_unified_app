@@ -1,0 +1,5 @@
+0.5   -> STEAM  WATER -> 109 REG START 0 
+1     -> STEAM WATER -> 110 
+
+
+STEAM = (WATER / 14 )+10  % OF 1400 
