@@ -1030,11 +1030,11 @@ class BLEManager extends ChangeNotifier {
   Future<String> _getDeviceLocation() async {
     try {
       // Check and request location permission
-      var permission = await Permission.location.status;
+      var permission = await Permission.locationWhenInUse.status;
       if (!permission.isGranted) {
         logs.add('  → Requesting location permission...');
         notifyListeners();
-        permission = await Permission.location.request();
+        permission = await Permission.locationWhenInUse.request();
         if (!permission.isGranted) {
           logs.add('  ⚠ Location permission denied');
           notifyListeners();
@@ -1720,9 +1720,9 @@ class _BLETerminalScreenState extends State<BLETerminalScreen>
       return false;
     }
 
-    var permission = await Permission.location.status;
+    var permission = await Permission.locationWhenInUse.status;
     if (!permission.isGranted) {
-      permission = await Permission.location.request();
+      permission = await Permission.locationWhenInUse.request();
       if (!permission.isGranted) {
         await _showLocationRequiredDialog();
         return false;

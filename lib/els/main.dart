@@ -175,9 +175,9 @@ class BLEManager extends ChangeNotifier {
   Future<String> _getDeviceLocation() async {
     try {
       // Check and request location permission
-      var permission = await Permission.location.status;
+      var permission = await Permission.locationWhenInUse.status;
       if (!permission.isGranted) {
-        permission = await Permission.location.request();
+        permission = await Permission.locationWhenInUse.request();
         if (!permission.isGranted) {
           logs.add('Location permission denied');
           return 'Unknown'; // Return default if permission denied
@@ -874,7 +874,9 @@ class _MainScreenState extends State<MainScreen> {
     }
 
     _syncPolling();
-    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   Future<void> _showDisconnectDialog() async {
@@ -1086,9 +1088,9 @@ class _MainScreenState extends State<MainScreen> {
       return false;
     }
 
-    var permission = await Permission.location.status;
+    var permission = await Permission.locationWhenInUse.status;
     if (!permission.isGranted) {
-      permission = await Permission.location.request();
+      permission = await Permission.locationWhenInUse.request();
       if (!permission.isGranted) {
         await _showLocationRequiredDialog();
         return false;
@@ -1617,7 +1619,11 @@ class _DeviceSelectorSheetState extends State<DeviceSelectorSheet> {
     widget.ble.addListener(_onBLEUpdate);
     // Start scanning if not already
     if (!widget.ble.isScanning && widget.ble.scannedDevices.isEmpty) {
-      widget.ble.connectManual();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          widget.ble.connectManual();
+        }
+      });
     }
   }
 
@@ -1628,7 +1634,9 @@ class _DeviceSelectorSheetState extends State<DeviceSelectorSheet> {
   }
 
   void _onBLEUpdate() {
-    if (mounted) setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
